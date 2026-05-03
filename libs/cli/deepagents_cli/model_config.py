@@ -602,6 +602,23 @@ def get_available_models() -> dict[str, list[str]]:
                 if model not in existing:
                     available[provider_name].append(model)
 
+    # Fold in curated model lists for OAuth-only providers (e.g. openai_codex,
+    # github_copilot). These have no langchain-registry entry and most users
+    # won't add a [providers.<name>] block to config.toml, so without this
+    # surfacing they'd be invisible to the /model selector even after a
+    # successful `deepagents login`. Only providers with stored credentials
+    # contribute, so we don't list models the user can't actually call.
+    for provider_name, oauth_models in _get_oauth_curated_models().items():
+        if not config.is_provider_enabled(provider_name):
+            continue
+        if provider_name not in available:
+            available[provider_name] = list(oauth_models)
+        else:
+            existing = set(available[provider_name])
+            for model in oauth_models:
+                if model not in existing:
+                    available[provider_name].append(model)
+
     _available_models_cache = available
     return available
 
@@ -857,6 +874,47 @@ def _has_oauth_credentials(provider: str) -> bool:
         # delete the file and re-login per the recovery message
         # `oauth.storage` already produced.
         return False
+
+
+def _get_oauth_curated_models() -> dict[str, tuple[str, ...]]:
+    """Return curated `{provider_name: (model_id, ...)}` for logged-in OAuth providers.
+
+    Used by `get_available_models` to surface OAuth-only providers
+    (`openai_codex`, `github_copilot`) in the `/model` selector. Only
+    providers with stored credentials and a known curated list contribute
+    — for `anthropic` we already get models via the langchain registry,
+    so it's intentionally absent here.
+
+    Returns an empty dict when the OAuth subpackage is unavailable
+    (trimmed installs / CI) so the caller can fold without conditionals.
+    """
+    try:
+        from deepagents_cli.oauth._kwargs import PROVIDER_TO_OAUTH_ID
+        from deepagents_cli.oauth.providers.github_copilot import (
+            GITHUB_COPILOT_DEFAULT_MODEL_IDS,
+        )
+        from deepagents_cli.oauth.providers.openai_codex import (
+            OPENAI_CODEX_DEFAULT_MODEL_IDS,
+        )
+        from deepagents_cli.oauth.storage import list_logged_in_providers
+    except ImportError:
+        return {}
+
+    curated: dict[str, tuple[str, ...]] = {
+        "github_copilot": GITHUB_COPILOT_DEFAULT_MODEL_IDS,
+        "openai_codex": OPENAI_CODEX_DEFAULT_MODEL_IDS,
+    }
+
+    logged_in: set[str] = set(list_logged_in_providers())
+    out: dict[str, tuple[str, ...]] = {}
+    for provider_name, oauth_id in PROVIDER_TO_OAUTH_ID.items():
+        if oauth_id not in logged_in:
+            continue
+        models = curated.get(provider_name)
+        if not models:
+            continue
+        out[provider_name] = tuple(sorted(models))
+    return out
 
 
 def get_credential_env_var(provider: str) -> str | None:

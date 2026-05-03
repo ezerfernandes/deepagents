@@ -1,6 +1,6 @@
 """Version information and lightweight constants for `deepagents-cli`."""
 
-__version__ = "0.0.48"  # x-release-please-version
+__version__ = "0.0.48+codex.fix.8"  # x-release-please-version
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
 """URL for `deepagents-cli` documentation."""

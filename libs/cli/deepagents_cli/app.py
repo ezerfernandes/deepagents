@@ -6448,8 +6448,8 @@ class DeepAgentsApp(App):
         terminal — the underlying flow, refresh, and persistence are
         identical regardless of which surface starts it.
         """
-        from deepagents_cli.message_store import AppMessage, UserMessage
         from deepagents_cli.oauth import list_providers
+        from deepagents_cli.widgets.messages import AppMessage, UserMessage
 
         await self._mount_message(UserMessage(command))
 
@@ -6494,11 +6494,11 @@ class DeepAgentsApp(App):
         (`delete_credentials` just unlinks the on-disk file), so we run
         it inline.
         """
-        from deepagents_cli.message_store import AppMessage, UserMessage
         from deepagents_cli.oauth import (
             delete_credentials,
             list_logged_in_providers,
         )
+        from deepagents_cli.widgets.messages import AppMessage, UserMessage
 
         await self._mount_message(UserMessage(command))
 

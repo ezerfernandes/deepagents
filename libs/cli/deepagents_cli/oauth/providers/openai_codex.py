@@ -60,6 +60,36 @@ as the `originator` request header on every Codex chat request. We use
 `deepagents` (not pi-mono's `pi`) because this is a different CLI."""
 
 
+OPENAI_CODEX_DEFAULT_MODEL_IDS = (
+    "gpt-5.2",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.5",
+)
+"""Curated default model IDs for the ChatGPT Codex Responses endpoint.
+
+A subset of the openai-codex-responses entries in pi-mono's
+`models.generated.ts` registry, narrowed to slugs that have been
+empirically observed to work on ChatGPT accounts. The variants we
+exclude — `gpt-5.2-codex`, `gpt-5.3-codex-spark`, `gpt-5.1-codex-max`,
+`gpt-5.1-codex-mini` — return HTTP 400
+`The '<id>' model is not supported when using Codex with a ChatGPT account.`
+when called from a (non-internal) ChatGPT subscription, even though
+they appear in pi-mono's registry.
+
+Entitlement still varies by tier within the kept set: Plus accounts
+historically only call `gpt-5.2`; Pro / Business / Enterprise tiers
+expose `gpt-5.5`, `gpt-5.4*`, and `gpt-5.3-codex`. Sending an ID the
+tier doesn't expose responds with the same `not supported` 400 — now
+visible directly thanks to the BadRequest unwrapper in
+`_oauth_middleware.OpenAICodexOAuthMiddleware`.
+
+Users with extra entitlements (or who want to try the excluded slugs
+on a tier that supports them) can override the list entirely via
+`[providers.openai_codex] models = [...]` in `~/.deepagents/config.toml`."""
+
+
 @dataclass(frozen=True, slots=True)
 class _RaceResult:
     code: str | None

@@ -327,6 +327,55 @@ class TestBug2PerRequestRefresh:
         assert headers["Authorization"] == "Bearer fresh-codex"
         assert headers["chatgpt-account-id"] == "acct-NEW"
 
+    async def test_codex_lifts_system_prompt_into_instructions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codex Responses rejects system role inside `input`.
+
+        The middleware must move the prompt to top-level `instructions`
+        (via `extra_body`) and clear `system_message` so the runtime
+        doesn't re-insert it into messages. Mirrors pi-mono's
+        `includeSystemPrompt: false` + `instructions: ...` pattern at
+        `pi-mono/.../openai-codex-responses.ts:326`.
+        """
+        from deepagents_cli._oauth_middleware import OpenAICodexOAuthMiddleware
+
+        save_credentials(
+            "openai-codex",
+            OAuthCredentials(
+                access="codex-token",
+                refresh="r",
+                expires=time.time() + 3600,
+                extras={ACCOUNT_ID_KEY: "acct-1"},
+            ),
+        )
+
+        async def _fake_refresh(provider_id, credentials):  # noqa: ARG001
+            return credentials
+
+        import deepagents_cli._oauth_middleware as middleware
+        import deepagents_cli.oauth as oauth_pkg
+
+        monkeypatch.setattr(oauth_pkg, "refresh_credentials", _fake_refresh)
+        monkeypatch.setattr(middleware, "refresh_credentials", _fake_refresh)
+
+        class FakeCodex:
+            default_headers = {"originator": "deepagents"}
+
+        request = _FakeRequest(
+            FakeCodex(),
+            system_prompt="You are a helpful coding assistant.",
+        )
+        handler = _RecordingHandler()
+        await OpenAICodexOAuthMiddleware().awrap_model_call(request, handler)
+
+        forwarded = handler.received[0]
+        extra_body = forwarded.model_settings["extra_body"]
+        assert extra_body["instructions"] == "You are a helpful coding assistant."
+        # `_FakeRequest.override` sets the attribute, so the runtime sees
+        # `system_message=None` and won't prepend a system role to input.
+        assert forwarded.system_message is None
+
     async def test_refresh_failure_falls_back_to_stale_credentials(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -551,5 +600,7 @@ class TestProviderNameNormalization:
             create_model("openai-codex:gpt-4o")
 
         assert captured["provider"] == "openai_codex"
-        assert captured["class_path"] == "langchain_openai.chat_models:ChatOpenAI"
+        assert captured["class_path"] == (
+            "deepagents_cli.oauth.providers._openai_codex_chat:_CodexChatOpenAI"
+        )
         assert captured["api_key"] == "jwt_access_token"

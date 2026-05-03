@@ -1917,8 +1917,11 @@ _BUILT_IN_OAUTH_CLASS_PATHS: dict[str, str] = {
     # `oauth._kwargs._github_copilot_kwargs`).
     "github_copilot": "langchain_anthropic.chat_models:ChatAnthropic",
     # ChatGPT Plus/Pro Codex uses OpenAI's Responses API at a custom
-    # base URL; `ChatOpenAI(use_responses_api=True)` drives it.
-    "openai_codex": "langchain_openai.chat_models:ChatOpenAI",
+    # base URL; `_CodexChatOpenAI` is a `ChatOpenAI` subclass that
+    # lifts `SystemMessage`s to top-level `instructions` (Codex rejects
+    # `role: system` items in `input`). See
+    # `oauth/providers/_openai_codex_chat.py` for the rationale.
+    "openai_codex": "deepagents_cli.oauth.providers._openai_codex_chat:_CodexChatOpenAI",
 }
 """Default `class_path` mapping for OAuth-only providers.
 

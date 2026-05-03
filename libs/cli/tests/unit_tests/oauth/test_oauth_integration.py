@@ -95,8 +95,26 @@ class TestOAuthKwargs:
         kwargs = oauth_kwargs_for("openai_codex", creds)
         assert kwargs["base_url"] == CODEX_BASE_URL
         assert kwargs["use_responses_api"] is True
+        # Codex Responses endpoint rejects `store=true`/omitted with
+        # "Store must be set to false" — surface as 400 BadRequest.
+        assert kwargs["store"] is False
+        # Codex requires `stream: true`. Setting `streaming=True` on the
+        # LangChain model ensures `.invoke()` still sends a streaming
+        # request (it aggregates the SSE response internally).
+        assert kwargs["streaming"] is True
+        # Required so Codex ships the encrypted chain-of-thought blob;
+        # omitting it fails the request with an opaque internal error.
+        assert kwargs["include"] == ["reasoning.encrypted_content"]
+        # gpt-5 family on Codex needs an explicit reasoning block,
+        # otherwise the model replies in prose and never emits
+        # `function_call` items (mirrors mini-swe-agent).
+        assert kwargs["reasoning"] == {"effort": "medium", "summary": "auto"}
+        # Pi-mono defaults `text.verbosity` to "low"; some tiers
+        # reject requests that omit it.
+        assert kwargs["verbosity"] == "low"
         assert kwargs["default_headers"]["chatgpt-account-id"] == "acct-XYZ"
         assert kwargs["default_headers"]["originator"] == ORIGINATOR
+        assert "User-Agent" in kwargs["default_headers"]
 
     def test_openai_codex_missing_account_raises(self) -> None:
         creds = OAuthCredentials(access="jwt", refresh="r", expires=0.0)

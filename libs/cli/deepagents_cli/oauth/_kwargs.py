@@ -129,9 +129,43 @@ def _openai_codex_kwargs(credentials: OAuthCredentials) -> dict[str, Any]:
     """Kwargs for `langchain_openai.ChatOpenAI(use_responses_api=True)` with Codex.
 
     The Codex endpoint at `https://chatgpt.com/backend-api/codex/responses`
-    requires `chatgpt-account-id` (extracted from the JWT at login time)
-    and `originator` headers — pi-mono uses `originator=pi`; we send
-    `originator=deepagents` to identify our CLI distinctly.
+    has several quirks beyond a normal Responses API call (verified
+    against the live backend; mirrors
+    `pi-mono/packages/ai/src/providers/openai-codex-responses.ts:315-360`):
+
+    - `store=False` is mandatory. The endpoint replies HTTP 400
+      "Store must be set to false" when omitted or true.
+    - `stream=True` is mandatory. Without it, HTTP 400
+      "Stream must be set to true". We set `streaming=True` on the
+      LangChain model so even sync `.invoke()` calls send
+      `stream: true` and aggregate the SSE response client-side.
+    - `include=["reasoning.encrypted_content"]` is required so Codex
+      can ship the encrypted chain-of-thought blob alongside outputs.
+    - `reasoning={effort, summary}` is required for the gpt-5 family.
+      Without it the model often replies in prose and never emits
+      `function_call` items, which the agent runtime then surfaces as
+      a `BadRequestError` on the follow-up turn (mirrors mini-swe-agent
+      `oauth_response_model._codex_query` and
+      `pi-mono/.../openai-codex-responses.ts:355-360`).
+    - `verbosity="low"` matches pi-mono's default `text.verbosity`
+      (`pi-mono/.../openai-codex-responses.ts:330`); some tiers reject
+      requests that omit `text.verbosity`.
+    - The `chatgpt-account-id` header (extracted from the JWT at login
+      time), the `originator` header, and a recognizable `User-Agent`
+      authenticate the call.
+    - The system prompt must travel as the top-level `instructions`
+      field; the system role inside `input` is rejected. This rewrite
+      is performed per-request by `OpenAICodexOAuthMiddleware`.
+
+    Subscription-supported model slugs are dynamic. The Codex backend
+    exposes a registry at
+    `GET /codex/models?client_version=...`; ChatGPT Plus accounts
+    typically only return `gpt-5.2`. Sending any other slug fails with
+    HTTP 400 ".. is not supported when using Codex with a ChatGPT
+    account." which our stack surfaces as
+    `BadRequestError: An internal error occurred` when the request is
+    additionally malformed in another way (the opaque message is the
+    server's fallback when multiple validations fail).
     """
     account_id = credentials.extras.get(ACCOUNT_ID_KEY)
     if not isinstance(account_id, str) or not account_id:
@@ -144,10 +178,16 @@ def _openai_codex_kwargs(credentials: OAuthCredentials) -> dict[str, Any]:
         "api_key": credentials.access,
         "base_url": CODEX_BASE_URL,
         "use_responses_api": True,
+        "store": False,
+        "streaming": True,
+        "include": ["reasoning.encrypted_content"],
+        "reasoning": {"effort": "medium", "summary": "auto"},
+        "verbosity": "low",
         "default_headers": {
             "chatgpt-account-id": account_id,
             "originator": ORIGINATOR,
             "OpenAI-Beta": "responses=experimental",
+            "User-Agent": f"{ORIGINATOR}-cli (codex-responses)",
         },
     }
 

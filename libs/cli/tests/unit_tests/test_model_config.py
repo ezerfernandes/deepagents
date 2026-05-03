@@ -1127,6 +1127,104 @@ api_key_env = "SOME_KEY"
         assert "empty" not in models
 
 
+class TestGetAvailableModelsOAuthFoldIn:
+    """Tests OAuth-only providers fold into the `/model` selector.
+
+    `openai_codex` and `github_copilot` are not in langchain's registry,
+    so without curated fold-in they would only appear after the user
+    manually edits `config.toml`. With stored credentials we surface
+    them automatically.
+    """
+
+    def test_codex_models_appear_when_logged_in(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.oauth.storage.list_logged_in_providers",
+                return_value=["openai-codex"],
+            ),
+        ):
+            models = get_available_models()
+
+        from deepagents_cli.oauth.providers.openai_codex import (
+            OPENAI_CODEX_DEFAULT_MODEL_IDS,
+        )
+        assert "openai_codex" in models
+        for model_id in OPENAI_CODEX_DEFAULT_MODEL_IDS:
+            assert model_id in models["openai_codex"]
+
+    def test_codex_absent_when_not_logged_in(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.oauth.storage.list_logged_in_providers",
+                return_value=[],
+            ),
+        ):
+            models = get_available_models()
+
+        assert "openai_codex" not in models
+
+    def test_disabled_in_config_hides_oauth_provider(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+enabled = false
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.oauth.storage.list_logged_in_providers",
+                return_value=["openai-codex"],
+            ),
+        ):
+            models = get_available_models()
+
+        assert "openai_codex" not in models
+
+    def test_user_config_models_merged_with_curated(self, tmp_path: Path) -> None:
+        """Existing config-file models stay; curated additions append."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+class_path = "langchain_openai.chat_models:ChatOpenAI"
+models = ["custom-tuned-codex"]
+""")
+        with (
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.oauth.storage.list_logged_in_providers",
+                return_value=["openai-codex"],
+            ),
+        ):
+            models = get_available_models()
+
+        assert "openai_codex" in models
+        assert "custom-tuned-codex" in models["openai_codex"]
+        # The curated default model is also present
+        assert "gpt-5.2" in models["openai_codex"]
+
+
 class TestDisabledProviders:
     """Tests for provider hiding via `enabled = false`."""
 

@@ -40,6 +40,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import SystemMessage
 
 from deepagents_cli.oauth import (
     OAuthCredentials,
@@ -398,23 +399,101 @@ class GitHubCopilotHeadersMiddleware(AgentMiddleware):
 def _build_codex_request(
     request: ModelRequest, credentials: OAuthCredentials | None
 ) -> ModelRequest:
-    if not _model_is_openai_codex(request.model) or credentials is None:
+    if not _model_is_openai_codex(request.model):
         return request
 
-    account_id = credentials.extras.get(ACCOUNT_ID_KEY)
-    if not isinstance(account_id, str) or not account_id:
-        # Refresh did not include an account id — nothing safe to inject;
-        # let the construction-time headers take their chances.
-        return request
-
-    extra_headers = {
-        "Authorization": f"Bearer {credentials.access}",
-        "chatgpt-account-id": account_id,
-    }
     settings = dict(request.model_settings or {})
-    merged_extra = {**(settings.get("extra_headers") or {}), **extra_headers}
-    settings["extra_headers"] = merged_extra
-    return request.override(model_settings=settings)
+    overrides: dict[str, Any] = {}
+
+    # Inject fresh OAuth headers when the refresh produced usable creds.
+    # If anything in that chain failed (no creds yet, no account id on the
+    # JWT) we still apply the system-prompt rewrite below — it only depends
+    # on the request, not on credentials.
+    if credentials is not None:
+        account_id = credentials.extras.get(ACCOUNT_ID_KEY)
+        if isinstance(account_id, str) and account_id:
+            extra_headers = {
+                "Authorization": f"Bearer {credentials.access}",
+                "chatgpt-account-id": account_id,
+            }
+            settings["extra_headers"] = {
+                **(settings.get("extra_headers") or {}),
+                **extra_headers,
+            }
+
+    # The Codex Responses endpoint rejects requests that put the system
+    # role inside `input` — Codex returns HTTP 400
+    # `{'detail': 'System messages are not allowed'}` on any such item.
+    # Pi-mono works around this by passing the system prompt as the
+    # top-level `instructions` field instead
+    # (`pi-mono/.../openai-codex-responses.ts:326`). LangChain's agent
+    # otherwise prepends `request.system_message` to the message list,
+    # which `langchain_openai` then serializes as a system-role input
+    # item. Lift it out: hand the prompt to OpenAI as `instructions`
+    # via `extra_body`, and clear `system_message` so the runtime
+    # doesn't double-include it.
+    instructions = request.system_prompt
+    if instructions:
+        settings["extra_body"] = {
+            **(settings.get("extra_body") or {}),
+            "instructions": instructions,
+        }
+        overrides["system_message"] = None
+
+    # Filter `SystemMessage` instances out of the conversation history
+    # too. They sneak in via langgraph checkpointed state — e.g. when
+    # the user starts a thread under one provider and switches to
+    # `openai-codex` mid-thread, the prior provider's system prompt is
+    # still pinned at index 0 of `state["messages"]`. The agent
+    # factory's `_execute_model_sync` does not filter these because
+    # `ModelRequest.messages` is documented as "excluding system
+    # message" — that contract holds for the *current* turn's
+    # `system_message` field, not for stale system messages already in
+    # state. If we leave them, `_construct_responses_api_input` ships
+    # them as `{"role": "system", ...}` and Codex 400s the call. Drop
+    # them here; the live system prompt is already on `instructions`.
+    original_messages = list(request.messages or [])
+    filtered = [m for m in original_messages if not isinstance(m, SystemMessage)]
+    if len(filtered) != len(original_messages):
+        overrides["messages"] = filtered
+
+    overrides["model_settings"] = settings
+    return request.override(**overrides)
+
+
+def _unwrap_codex_bad_request(exc: BaseException) -> BaseException:
+    """Translate `openai.BadRequestError` into a `RuntimeError` carrying
+    the real Codex error text.
+
+    `langgraph_api/serde.py:88-110` only passes `str(exc)` through for a
+    closed allowlist of exception types. `openai.BadRequestError` is not
+    on it, so the user sees the generic `"An internal error occurred"`
+    string instead of the actual Codex validation message. We re-raise
+    as `RuntimeError` (which IS on the allowlist) with the body string
+    flattened in, so `/model openai-codex:*` users see "Stream must be
+    set to true" / "Store must be set to false" / "<id> is not
+    supported when using Codex with a ChatGPT account." and can act on
+    it.
+    """
+    try:
+        import openai
+    except ImportError:
+        return exc
+    if not isinstance(exc, openai.BadRequestError):
+        return exc
+    body = getattr(exc, "body", None)
+    detail: str | None = None
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            detail = err.get("message") or err.get("code")
+        elif isinstance(err, str):
+            detail = err
+    if not detail:
+        detail = exc.message or str(exc)
+    new_exc = RuntimeError(f"Codex BadRequest: {detail}")
+    new_exc.__cause__ = exc
+    return new_exc
 
 
 class OpenAICodexOAuthMiddleware(AgentMiddleware):
@@ -436,7 +515,14 @@ class OpenAICodexOAuthMiddleware(AgentMiddleware):
             if _model_is_openai_codex(request.model)
             else None
         )
-        return handler(_build_codex_request(request, creds))
+        try:
+            return handler(_build_codex_request(request, creds))
+        except Exception as exc:
+            translated = _unwrap_codex_bad_request(exc)
+            if translated is exc:
+                raise
+            logger.warning("Codex BadRequest: %s", translated, exc_info=True)
+            raise translated from exc
 
     async def awrap_model_call(  # noqa: PLR6301
         self,
@@ -448,7 +534,14 @@ class OpenAICodexOAuthMiddleware(AgentMiddleware):
             if _model_is_openai_codex(request.model)
             else None
         )
-        return await handler(_build_codex_request(request, creds))
+        try:
+            return await handler(_build_codex_request(request, creds))
+        except Exception as exc:
+            translated = _unwrap_codex_bad_request(exc)
+            if translated is exc:
+                raise
+            logger.warning("Codex BadRequest: %s", translated, exc_info=True)
+            raise translated from exc
 
 
 # ---------------------------------------------------------------------------
