@@ -387,6 +387,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "skills": ("skills_command", "show_skills_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
+    "auth": ("auth_command", "show_auth_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -578,6 +579,12 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
     setup_mcp_parsers(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
+    from deepagents_cli.oauth_commands import setup_oauth_parsers
+
+    setup_oauth_parsers(
         subparsers,
         make_help_action=_make_help_action,
     )
@@ -1877,6 +1884,22 @@ def cli_main() -> None:
                     )
                 )
             show_mcp_help()
+        elif args.command == "login":
+            from deepagents_cli.oauth_commands import run_login
+
+            sys.exit(asyncio.run(run_login(args.provider)))
+        elif args.command == "logout":
+            from deepagents_cli.oauth_commands import run_logout
+
+            sys.exit(asyncio.run(run_logout(args.provider)))
+        elif args.command == "auth":
+            from deepagents_cli.oauth_commands import run_auth_list
+            from deepagents_cli.ui import show_auth_help
+
+            if args.auth_command in {"list", "ls"}:
+                sys.exit(run_auth_list())
+            else:
+                show_auth_help()
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

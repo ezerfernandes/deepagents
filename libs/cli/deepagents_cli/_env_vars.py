@@ -66,6 +66,14 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+OAUTH_CALLBACK_HOST = "DEEPAGENTS_CLI_OAUTH_CALLBACK_HOST"
+"""Bind address for the local OAuth callback server (default: `127.0.0.1`).
+
+Used by the Anthropic and OpenAI Codex login flows. Override to e.g.
+`0.0.0.0` when the browser runs on a different machine and needs to
+reach the callback server through a tunnel.
+"""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 

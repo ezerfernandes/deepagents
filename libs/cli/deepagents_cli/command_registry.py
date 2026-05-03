@@ -90,6 +90,20 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/login",
+        description="Sign in to Anthropic Pro/Max, ChatGPT Plus/Pro, or GitHub Copilot",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="oauth subscription anthropic copilot codex chatgpt",
+        argument_hint="[provider]",
+    ),
+    SlashCommand(
+        name="/logout",
+        description="Forget stored OAuth credentials",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="signout",
+        argument_hint="[provider]",
+    ),
+    SlashCommand(
         name="/mcp",
         description="Show active MCP servers and tools",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

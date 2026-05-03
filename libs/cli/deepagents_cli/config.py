@@ -1910,6 +1910,25 @@ def _ensure_cli_openrouter_profile_registered() -> None:
     _cli_openrouter_profile_registered = True
 
 
+_BUILT_IN_OAUTH_CLASS_PATHS: dict[str, str] = {
+    # GitHub Copilot exposes an Anthropic-compatible chat endpoint at
+    # api.<flavor>.githubcopilot.com — `ChatAnthropic` drives it directly
+    # once we provide the right `base_url` and `default_headers` (see
+    # `oauth._kwargs._github_copilot_kwargs`).
+    "github_copilot": "langchain_anthropic.chat_models:ChatAnthropic",
+    # ChatGPT Plus/Pro Codex uses OpenAI's Responses API at a custom
+    # base URL; `ChatOpenAI(use_responses_api=True)` drives it.
+    "openai_codex": "langchain_openai.chat_models:ChatOpenAI",
+}
+"""Default `class_path` mapping for OAuth-only providers.
+
+Consulted after a user's `config.toml` lookup so a custom override
+still wins. Adding a provider here means
+`deepagents --model <provider>:<model>` works after `deepagents login`
+without further configuration.
+"""
+
+
 def _get_provider_kwargs(
     provider: str, *, model_name: str | None = None
 ) -> dict[str, Any]:
@@ -1951,7 +1970,98 @@ def _get_provider_kwargs(
         if api_key:
             result["api_key"] = api_key
 
+    # Fall through to OAuth-stored credentials when the env var is unset.
+    # `oauth.get_access_token` auto-refreshes expired tokens, then we
+    # translate the credentials into provider-specific kwargs (custom
+    # base_url, headers, betas) via `oauth._kwargs.oauth_kwargs_for`.
+    if "api_key" not in result:
+        _merge_oauth_kwargs(provider, result)
+
     return result
+
+
+def _merge_oauth_kwargs(provider: str, kwargs: dict[str, Any]) -> None:
+    """Layer OAuth-derived kwargs onto *kwargs* in place when applicable.
+
+    Keeps the env-var path unchanged: we only consult OAuth storage
+    when the env var lookup didn't yield an api_key. Existing keys in
+    *kwargs* (e.g. `base_url` from `config.toml`) win over OAuth-derived
+    defaults so users can still override per-provider settings.
+    """
+    import asyncio
+
+    from deepagents_cli.oauth._kwargs import (
+        get_oauth_id_for_provider,
+        oauth_kwargs_for,
+    )
+    from deepagents_cli.oauth.storage import load_credentials
+
+    oauth_id = get_oauth_id_for_provider(provider)
+    if oauth_id is None:
+        return
+
+    credentials = load_credentials(oauth_id)
+    if credentials is None:
+        return
+
+    # Refresh if expired. `_get_provider_kwargs` is *usually* called from
+    # sync code (CLI startup, MCP subprocess), but `/model` reconstructs
+    # the model from inside Textual's running event loop — calling
+    # `asyncio.run` there raises `RuntimeError: This event loop is
+    # already running` and the model swap explodes. When a loop is
+    # active we skip the refresh here and let the per-request OAuth
+    # middleware (`_oauth_middleware`) handle it before each call. The
+    # middleware sees the same expiry and refreshes via `await`.
+    import time
+
+    if time.time() >= credentials.expires:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            running = False
+        else:
+            running = True
+
+        if running:
+            logger.debug(
+                "OAuth refresh for %s deferred to per-request middleware "
+                "(running event loop detected)",
+                oauth_id,
+            )
+        else:
+            try:
+                from deepagents_cli.oauth import refresh_credentials
+
+                credentials = asyncio.run(refresh_credentials(oauth_id, credentials))
+            except Exception:
+                logger.warning(
+                    "OAuth refresh for %s failed; "
+                    "falling back to current credentials. "
+                    "Run `deepagents login %s` if requests fail.",
+                    oauth_id,
+                    oauth_id,
+                    exc_info=True,
+                )
+
+    try:
+        oauth_kwargs = oauth_kwargs_for(provider, credentials)
+    except ValueError as exc:
+        logger.warning("Skipping OAuth kwargs for %s: %s", provider, exc)
+        return
+
+    # User-supplied kwargs in `config.toml` override OAuth-derived defaults.
+    # `default_headers` are merged shallowly so a user can add their own
+    # custom header without losing the OAuth-required ones.
+    user_headers = (
+        kwargs.get("default_headers")
+        if isinstance(kwargs.get("default_headers"), dict)
+        else None
+    )
+    for key, value in oauth_kwargs.items():
+        if key == "default_headers" and user_headers is not None:
+            kwargs["default_headers"] = {**value, **user_headers}
+            continue
+        kwargs.setdefault(key, value)
 
 
 def _create_model_from_class(
@@ -2242,6 +2352,14 @@ def create_model(
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
 
+    # Normalize hyphenated provider names to underscore form so that
+    # `github-copilot:model` and `openai-codex:model` resolve the same
+    # credential/class-path lookups as `github_copilot:model` and
+    # `openai_codex:model`. The login command surfaces hyphenated IDs
+    # (matching the OAuth registry), but all internal dicts use underscores.
+    if provider:
+        provider = provider.replace("-", "_")
+
     # Early credential check — fail fast with an actionable message instead of
     # letting the provider SDK raise an opaque auth error on first invocation.
     # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
@@ -2300,6 +2418,8 @@ def create_model(
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
+    if class_path is None and provider:
+        class_path = _BUILT_IN_OAUTH_CLASS_PATHS.get(provider)
 
     if class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)

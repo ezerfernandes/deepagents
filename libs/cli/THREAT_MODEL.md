@@ -26,6 +26,7 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Subscription OAuth flows and token storage (`oauth/` package, `oauth_commands.py`, `_oauth_middleware.py`)
 
 ### Out of Scope
 
@@ -136,6 +137,10 @@
 | C15 | LocalContext Middleware      | Runs a bash detection script via backend; injects git/project/env context into system prompt each turn              | framework-controlled | Yes⁶     | `local_context.LocalContextMiddleware.before_agent`, `local_context.build_detect_script`          |
 | C16 | Custom Subagent Loader      | Reads `{dir}/{name}/AGENTS.md` YAML frontmatter from `.deepagents/agents/` and project `.agents/` directories      | user-controlled      | No       | `subagents.list_subagents`, `subagents._parse_subagent_file`                                      |
 | C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
+| C18 | OAuth Provider Registry     | Built-in login + refresh flows for Anthropic Pro/Max, GitHub Copilot, ChatGPT Plus/Pro Codex                        | framework-controlled | No⁷      | `oauth.login`, `oauth.refresh_credentials`, `oauth.get_access_token`, `oauth.providers.{anthropic,github_copilot,openai_codex}` |
+| C19 | OAuth Callback Server       | Local async HTTP server (`asyncio.start_server`) catching the OAuth redirect on a fixed per-provider port           | framework-controlled | Yes⁸     | `oauth.callback_server.start_callback_server`, `oauth.callback_server.try_start_callback_server`  |
+| C20 | OAuth Token Storage         | Per-provider JSON files at `~/.deepagents/.state/oauth-tokens/`; atomic `tmp+rename` + `fcntl.flock` sidecar lock   | framework-controlled | No⁷      | `oauth.storage.save_credentials`, `oauth.storage.load_credentials`, `oauth.storage.alock_provider` |
+| C21 | OAuth Request Middlewares   | Per-call refresh + header injection: Anthropic identity prefix, Copilot dynamic headers, Codex account-id rotation  | framework-controlled | Yes⁷     | `_oauth_middleware.AnthropicOAuthIdentityMiddleware`, `_oauth_middleware.GitHubCopilotHeadersMiddleware`, `_oauth_middleware.OpenAICodexOAuthMiddleware` |
 
 **Notes:**
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
@@ -144,6 +149,8 @@
 4. Sandbox mode requires explicit `--sandbox` CLI flag.
 5. Both TUI and non-interactive modes now always spawn a local LangGraph dev server and connect via `RemoteAgent`.
 6. `LocalContextMiddleware` is added whenever `LocalShellBackend` or an `_AsyncExecutableBackend` is in use (`agent.py:create_cli_agent`).
+7. OAuth components are inert until the user runs `deepagents login`. Once tokens are persisted, the request middlewares run on every chat turn and the auto-refresh path runs whenever a token is past its 5-minute safety margin.
+8. The OAuth callback server is started on demand by `deepagents login {anthropic,openai-codex}` (Anthropic uses port 53692, OpenAI Codex uses port 1455 — both registered with the IdP). It tears down before `login` returns; GitHub Copilot's device flow uses no callback server.
 
 ---
 
@@ -156,6 +163,7 @@
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
 | DC4 | MCP Trust Fingerprints | `mcp_trust.projects.*` in `config.toml`          | Low         | `~/.deepagents/config.toml`      | No                | Until revoked      | None       |
 | DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/{thread_id}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
+| DC6 | OAuth Subscription Tokens | Anthropic `sk-ant-oat-…`, GitHub user token + Copilot proxy token, OpenAI Codex JWT + `chatgpt_account_id` | Critical | `~/.deepagents/.state/oauth-tokens/<provider>.json` (mode `0600`, dir `0700`) | No (local file, file-mode protection only) | Until user runs `deepagents logout` or rotates upstream | All — breach trigger; Anthropic + OpenAI rotate refresh on every call |
 
 ### Data Classification Details
 
@@ -168,6 +176,7 @@
 - **Retention**: Process lifetime; cleared on CLI exit.
 - **Logging exposure**: Provider SDK error messages may include partial key information. The CLI does not log keys directly.
 - **Gaps**: API keys are passed to the server subprocess via `_build_server_env` which does `os.environ.copy()` — all keys in the parent's environment become available to the child.
+- **OAuth alternative**: Users who sign in via `deepagents login` instead of setting `*_API_KEY` get OAuth tokens persisted on disk (DC6), not env vars. The two paths are mutually exclusive per provider — `_get_provider_kwargs` consults env first, OAuth storage second.
 
 #### DC2: Conversation Messages
 
@@ -178,6 +187,16 @@
 - **Retention**: Unbounded — session files persist until manually deleted.
 - **Logging exposure**: Tool call arguments and results (including fetched web content) are in the checkpoint. File contents read by the agent are stored there too.
 - **Gaps**: Unencrypted on disk; no retention policy enforced by the CLI.
+
+#### DC6: OAuth Subscription Tokens
+
+- **Fields**: Provider-specific access + refresh tokens persisted by the OAuth login flows. Anthropic stores `sk-ant-oat-…` access + refresh tokens; GitHub Copilot stores the user's GitHub access token (long-lived `refresh`) and the short-lived Copilot proxy token (`access`); OpenAI Codex stores the JWT access + refresh tokens plus the `chatgpt_account_id` extracted from the JWT payload (`extras.accountId`). Optional GHE `enterpriseUrl` is stored under `extras` for routing.
+- **Storage**: `~/.deepagents/.state/oauth-tokens/<provider_id>.json`, written atomically via `os.open(O_CREAT|O_EXCL, 0o600)` + `Path.replace`. Parent directory is `chmod 0700`.
+- **Access**: Local filesystem; readable only by the owning user under POSIX file modes. A sidecar `<provider_id>.lock` file holds the `fcntl.flock` advisory lock used to serialize concurrent refreshes (no token data; same `0600` mode).
+- **Encryption**: None — `0600` file mode only. No system-keychain integration.
+- **Retention**: Until the user runs `deepagents logout` or `delete_credentials`. Anthropic and OpenAI Codex rotate `refresh_token` on every refresh; the storage layer overwrites in place.
+- **Logging exposure**: Tokens are never logged at any level. Refresh failures log only the provider id + warning text. The storage layer never includes payload contents in error messages — only the path.
+- **Gaps**: Unencrypted at rest beyond filesystem permissions. A process running as the same user can read tokens directly. Rotating-refresh providers (Anthropic, OpenAI) make a stolen `refresh_token` self-invalidating after the next legitimate refresh, but the access token remains valid until expiry.
 
 #### DC5: Offloaded Conversation History
 
@@ -206,6 +225,9 @@
 | TB9  | LocalContextMiddleware → Host Env     | Bash detect script output (git info, project files, Makefile) injected into system prompt | Script is framework-generated static code; 30s timeout; exit-code check | Content of Makefile, pyproject.toml, git branch names, directory listing |
 | TB10 | RemoteAgent → LangGraph Dev Server    | CLI communicates with agent via HTTP+SSE on localhost                       | Server bound to `127.0.0.1` (`server.py:_DEFAULT_HOST`); ephemeral per session | No authentication (`LANGGRAPH_AUTH_TYPE=noop`); any localhost process can reach the API |
 | TB11 | Config File → Code Execution          | `class_path` in `config.toml` triggers `importlib.import_module()` to load arbitrary Python modules | Format validation (`module:ClassName`); `issubclass(BaseChatModel)` check | Module-level side effects execute during import; user controls config file |
+| TB12 | Browser → Local OAuth Callback Server | Browser redirects to `http://localhost:{53692,1455}/<path>` after IdP consent | PKCE verifier + opaque `state` (`secrets.token_hex(16)`) checked on inbound; wall-clock timeout in `wait_for_code` (`DEFAULT_WAIT_TIMEOUT_SECONDS`); bind to `localhost` so dual-stack browsers reach the listener | Any local process that reaches the bound port can submit `code`/`state` query strings; we only ever resolve the future when both match the expected values |
+| TB13 | OAuth Token Refresh → Stored Credentials | `_api.refresh_credentials` and `_api.get_access_token` mutate the on-disk token | `fcntl.flock`-based exclusive lock on `<provider>.lock`; double-checked re-read inside the lock so a peer refresh wins instead of being clobbered; rotated refresh tokens land atomically | Concurrent refreshes from un-coordinated parents (e.g. a non-flock-aware process) are not serialized; Windows builds get atomic-write only |
+| TB14 | OAuth Token → Outbound Provider Request | Per-call middlewares inject Bearer + provider-specific headers onto the chat request | OAuth token attached as `Authorization: Bearer …` (and `x-api-key` for Anthropic to override the SDK's default); Claude Code identity prefix prepended for Anthropic OAuth; Copilot integration headers fixed in code | Provider-side handling of the token; whether the IdP rotates `refresh_token` per call (Anthropic, OpenAI Codex do; GitHub Copilot does not) |
 
 ### Boundary Details
 
@@ -258,6 +280,24 @@
 - **Outside**: Module-level code in the imported module executes unconditionally during `import_module()`. The `issubclass` check only runs after import. Any side effects (file I/O, network calls, subprocess spawning) in the module's top-level scope execute before the type check.
 - **Crossing mechanism**: `importlib.import_module(module_path)` in `config._create_model_from_class`.
 
+#### TB12: Browser → Local OAuth Callback Server
+
+- **Inside**: `oauth.callback_server.start_callback_server` binds to `localhost` (so `getaddrinfo` returns both IPv4 and IPv6), parses just enough HTTP to extract `code` + `state` from the query string, and only resolves the future when `state` matches the expected PKCE-independent opaque value (`secrets.token_hex(16)` for both Anthropic and OpenAI Codex). State mismatches and missing-code requests are logged and silently dropped (so stale browser tabs don't fail the in-progress flow). `wait_for_code` enforces `DEFAULT_WAIT_TIMEOUT_SECONDS = 300s` so an abandoned browser session can't hang the CLI.
+- **Outside**: The bound port (53692 / 1455) is reachable by any local process. The IdP-registered redirect URIs are `http://localhost:{port}/{callback,auth/callback}` — we cannot move them. Anyone who can `127.0.0.1:53692` while a login is in flight can submit a guess at `code`/`state`; the PKCE verifier check at `_exchange_authorization_code` is the second line of defence.
+- **Crossing mechanism**: `asyncio.start_server` accepting one TCP connection from the browser; `_handle_request` parses the request line and query.
+
+#### TB13: OAuth Token Refresh → Stored Credentials
+
+- **Inside**: `oauth._api.refresh_credentials` wraps the entire load → refresh → save sequence in `oauth.storage.alock_provider`, which acquires `fcntl.flock(LOCK_EX)` on `<provider>.lock` via `asyncio.to_thread` so the event loop stays responsive. After acquiring the lock, the on-disk credential is re-read so a peer refresh that already rotated the refresh token wins, and our refresh request uses the freshest input. Writes go through `save_credentials_locked` (atomic `tmp+rename`).
+- **Outside**: `fcntl.flock` is advisory — only honoured by callers that take the lock. A non-CLI process editing the JSON directly bypasses it. On Windows, `fcntl` is unavailable and the lock degrades to a no-op (atomic write only).
+- **Crossing mechanism**: `os.open(<provider>.lock, O_RDWR|O_CREAT, 0o600)` + `fcntl.flock(LOCK_EX)`.
+
+#### TB14: OAuth Token → Outbound Provider Request
+
+- **Inside**: Per-request middlewares (`_oauth_middleware.py`) refresh the OAuth credential when its expiry sits within `_REFRESH_LEAD_SECONDS` and inject the fresh token via `request.model_settings["extra_headers"]`, which langchain forwards to the underlying SDK. Anthropic OAuth additionally prepends the mandatory `"You are Claude Code, …"` system prompt prefix (`AnthropicOAuthIdentityMiddleware._prepend_identity`) — without it the OAuth-2025-04-20 endpoint returns `oauth_required`. GitHub Copilot adds dynamic `X-Initiator`/`Copilot-Vision-Request`/`Openai-Intent` headers per turn.
+- **Outside**: The provider's handling of the token (rate limits, scope enforcement, abuse detection) is upstream. We send a Bearer token over TLS to the IdP-registered endpoint and trust the provider with it.
+- **Crossing mechanism**: `extra_headers` merged into the chat-model call by langchain's middleware framework.
+
 ---
 
 ## Data Flows
@@ -289,6 +329,10 @@
 | DF23 | C9 Config    | C17 Model Config | `class_path` string from `config.toml` | —              | TB11             | TOML parse → importlib |
 | DF24 | C5 MCP Config | MCP Subprocess | `env` dict from `.mcp.json` forwarded to stdio subprocess | DC1 | TB4 | subprocess environment |
 | DF25 | C3 Agent     | C7 Sandbox   | Conversation messages for offload             | DC5            | TB6              | `backend.awrite()`     |
+| DF26 | Browser      | C19 Callback Server | OAuth `?code=…&state=…` redirect    | DC6            | TB12             | HTTP GET (localhost)   |
+| DF27 | C18 OAuth    | IdP token endpoint | `grant_type=refresh_token` body + persisted token rotate | DC6 | TB13, TB14 | HTTPS (httpx) + `fcntl.flock` |
+| DF28 | C20 Storage  | Local FS     | OAuth tokens read/written under mode `0600`   | DC6            | None             | atomic `tmp+rename`     |
+| DF29 | C21 Middleware | C3 Agent   | `extra_headers` injection (Bearer + provider-specific) | DC6 | TB14            | langchain `request.override` |
 
 ### Flow Details
 
@@ -344,6 +388,10 @@
 | T8  | DF21      | DC3            | Custom subagent AGENTS.md body used verbatim as system_prompt without content validation   | None     | Low      | Verified   | `subagents._parse_subagent_file`, `agent.create_cli_agent`            |
 | T9  | DF23      | —              | `class_path` in config.toml triggers arbitrary Python code execution via `importlib.import_module()` | TB11 | Low | Verified | `config._create_model_from_class`, `model_config.ProviderConfig`      |
 | T10 | DF24      | DC1            | MCP stdio subprocess env dict accepts arbitrary keys including `PATH`, `LD_PRELOAD`, `PYTHONPATH` without filtering | TB4 | Low | Verified | `mcp_tools._validate_server_config`, `mcp_tools._load_tools_from_config` |
+| T11 | DF26      | DC6            | Local process on the same machine guesses `state`/`code` against the OAuth callback port mid-flight | TB12 | Low | Verified | `oauth.callback_server._handle_request`, `oauth.providers.{anthropic,openai_codex}._exchange_authorization_code` |
+| T12 | DF27      | DC6            | Concurrent CLI processes both refresh a rotating-refresh provider (Anthropic, OpenAI Codex); loser persists invalidated credentials | TB13 | Low | Verified | `oauth._api.refresh_credentials`, `oauth.storage.alock_provider`, `oauth.storage.save_credentials_locked` |
+| T13 | DF28      | DC6            | Stored OAuth tokens readable by any process running as the same UID; no system-keychain integration | None | Low | Unverified | `oauth.storage._write_atomic` (`0o600` file mode) |
+| T14 | DF26      | —              | Browser preflight or stale-tab callback to `/callback` without code can hang `wait_for_code` indefinitely | TB12 | Low | Verified | `oauth.callback_server.wait_for_code`, `oauth.callback_server.DEFAULT_WAIT_TIMEOUT_SECONDS` |
 
 ### Threat Details
 
@@ -406,6 +454,30 @@
 - **Flow**: DF24 (MCP config → subprocess environment)
 - **Description**: The `"env"` field in stdio MCP server definitions (`.mcp.json`) accepts an arbitrary key-value dict. `mcp_tools._validate_server_config` only checks that the field is a dict — it does not filter key names or values. The dict is forwarded directly to `StdioConnection(env=...)` which passes it to the subprocess. An attacker who can modify a project-level `.mcp.json` could set `PATH` to redirect command resolution, `LD_PRELOAD` to inject shared libraries, or `PYTHONPATH` to hijack Python imports in the MCP subprocess.
 - **Preconditions**: (1) Attacker has write access to a project-level `.mcp.json`; (2) The project MCP config must be trusted by the user (fingerprint approval gate via `mcp_trust`). For user-level `~/.deepagents/.mcp.json`, the attacker already has home directory write access. Note: the `env` dict from MCP config is passed to `StdioConnection` — whether it replaces or merges with `os.environ` depends on the `langchain_mcp_adapters` library implementation.
+
+#### T11: Local CSRF Against the OAuth Callback Port
+
+- **Flow**: Browser → `oauth.callback_server` (TB12). A local process probes `127.0.0.1:53692/callback?code=<guess>&state=<guess>` (or `:1455/auth/callback`) while a real login is in flight.
+- **Description**: The PKCE flow's local callback listener accepts any TCP connection on the bound port. If an attacker process can guess the opaque `state` (`secrets.token_hex(16)`, ~128 bits) and inject a `code` value, they could race the legitimate browser callback. We resolve `wait_for_code` only on `state` match. Even if the attacker wins the race, the subsequent token exchange at the IdP requires the PKCE verifier we never published — so a stolen `code` exchanged without the verifier returns `invalid_grant`.
+- **Preconditions**: (1) Attacker process running on the same machine as the user during `deepagents login`; (2) attacker correctly guesses the 128-bit opaque `state` (cryptographically infeasible) AND has a way to obtain a valid `code` (which only the IdP redirects can produce). Effectively defence-in-depth — the PKCE check is the real control.
+
+#### T12: Concurrent Refresh Race on Rotating Refresh Tokens
+
+- **Flow**: DF27 (CLI process A refresh) overlaps with DF27 (CLI process B refresh).
+- **Description**: Anthropic and OpenAI Codex both rotate `refresh_token` on every successful refresh call. Without `oauth.storage.alock_provider`, two processes that both detect an expired token race: each calls the IdP, but only one can persist the freshest pair. The loser overwrites it with credentials whose `refresh_token` was already invalidated by the winner's call, causing the next refresh to fail with `invalid_grant`. We mitigate via the cross-process `fcntl.flock` lock and a double-checked re-read inside the lock that lets the loser short-circuit and reuse the winner's token.
+- **Preconditions**: Two `deepagents` processes (or one process and a hand-rolled refresh) running concurrently against the same `~/.deepagents/.state/oauth-tokens/`. The lock is honoured only by callers that go through `oauth.storage`/`oauth._api`.
+
+#### T13: Local UID-Adjacent Process Reading Token File
+
+- **Flow**: Any local process running as the same UID can `cat` `~/.deepagents/.state/oauth-tokens/<provider>.json`.
+- **Description**: Tokens are written with mode `0600` and the parent directory `chmod 0700`, so a different OS user cannot read them. Any process running as the same UID (a malicious tool the user invoked, a compromised dev dependency, etc.) can. We do not integrate with system keychains. Anthropic and OpenAI Codex's refresh-token rotation makes a stolen `refresh_token` self-invalidating after the next legitimate refresh, but the access token remains usable until the 5-minute pre-expiry safety margin elapses. GitHub Copilot's `refresh` field is the user's GitHub access token (long-lived), so theft is more damaging there until the user revokes the GitHub OAuth grant.
+- **Preconditions**: Attacker has code execution as the user, or the user runs an untrusted tool inside the session.
+
+#### T14: Wall-Clock Hang on Stale or Probing Callback Requests
+
+- **Flow**: Stale browser tab fires `GET /callback?code=…&state=…` with a `state` from a previous login attempt; or a CSRF probe sends `code` without `state`.
+- **Description**: `_handle_request` silently drops both cases (logs at DEBUG, no future resolution) so the legitimate callback for the in-flight login can still arrive. Without a wall-clock cap, an abandoned login (user closed the browser) would hang the CLI indefinitely. `wait_for_code` enforces `DEFAULT_WAIT_TIMEOUT_SECONDS = 300s` so the flow falls through to the manual-paste prompt.
+- **Preconditions**: Stale browser tab from prior login OR user abandons the in-flight login flow without finishing.
 
 ---
 
@@ -474,3 +546,4 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-03-10 | langster-threat-model (automated)  | Initial threat model                                                                             |
 | 2026-03-27 | langster-threat-model (automated)  | Deep expansion: added C11-C16 (server subprocess, RemoteAgent, LocalContextMiddleware, async subagent config, custom subagent loader); added TB8-TB10 (CLI/server IPC, LocalContext/host env, RemoteAgent/dev server); added DF18-DF22; added T6 (unauthenticated dev server), T7 (Makefile injection), T8 (subagent body injection); updated T5 (upstream msgpack fix confirmed); added data classification; added Investigated and Dismissed section; updated architecture diagram to reflect server-subprocess model |
 | 2026-03-28 | langster-threat-model (automated)  | Deep validation pass: added C17 (Model Config Loader with class_path), TB11 (Config→Code Execution); added DC5 (offloaded conversation history); added DF23-DF25 (class_path flow, MCP env dict flow, offload flow); added T9 (class_path arbitrary code execution), T10 (MCP env dict unfiltered); added D3 (SSRF dismissed — HITL is intended control), D4 (offload path injection dismissed — UUID7); **removed Status column and Mitigations/Residual Risk fields from all threats** (open source visibility compliance — mitigation status must not appear in public threat models); updated T6 validation from Likely to Verified (port is deterministic at 2024 default, discoverable via /proc); updated external context (no published advisories found); updated architecture diagram |
+| 2026-05-03 | manual update                      | Added subscription OAuth surface: C18 (provider registry), C19 (callback server), C20 (token storage), C21 (request middlewares); DC6 (stored OAuth tokens, including rotation semantics for Anthropic + OpenAI Codex); TB12 (browser → callback server), TB13 (refresh → storage with `fcntl.flock` cross-process serialization), TB14 (token → outbound provider); DF26-DF29; T11 (local CSRF defence-in-depth), T12 (concurrent refresh race), T13 (UID-adjacent token theft), T14 (wall-clock hang on probe/stale tab); assumptions 7-8 (OAuth dormancy + per-provider listener ports). |

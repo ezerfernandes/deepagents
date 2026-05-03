@@ -145,6 +145,7 @@ test = [
     "pytest-timeout>=2.3.1,<3.0.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "pytest-xdist>=3.8.0,<4.0.0",
+    "respx>=0.21.1,<1.0.0",
     "responses>=0.25.0,<1.0.0",
     "twine>=6.0.0,<7.0.0",
 ]
@@ -226,8 +227,12 @@ ignore-var-parameters = true
 "tests/**" = [
     "ANN001",   # Missing type annotation for function argument — not needed in tests
     "ANN201",   # Missing return type annotation — not needed in tests
+    "ANN202",   # Missing return type annotation on private fn — fine for test inner helpers
+    "ANN204",   # Missing return type on dunder — fine for test stand-ins
+    "B018",     # Useless expression — test scaffolding sometimes references attributes for shape
     "D1",       # Missing docstrings — not needed in tests
     "DOC",      # Docstring conventions — not needed in tests
+    "E501",     # Line too long — single-line docstrings/long strings sometimes intentional
     "F401",     # Imported but unused — test fixtures may appear unused
     "PLC0415",  # Lazy imports — test organization patterns
     "PLC1901",  # Comparison to empty string — fine in test assertions
@@ -237,6 +242,8 @@ ignore-var-parameters = true
     "PLR6301",  # Method could be a function — test class organization
     "PLW0108",  # Lambda may be unnecessary — fine in test mocks
     "RUF001",   # Ambiguous characters — fine in test strings
+    "RUF012",   # Mutable class attributes — frequently used as fake-model defaults
+    "RUF029",   # Async without await — required for AsyncMock-style stand-ins
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
 ]
@@ -280,6 +287,26 @@ ignore-var-parameters = true
     "SIM105",   # contextlib.suppress — try/except/pass is clearer in these contexts
     "T201",     # `print` found — CLI commands use print for user output
     "TC003",    # Move import into TYPE_CHECKING — imports are used at runtime
+]
+"deepagents_cli/oauth/**" = [
+    "ASYNC109", # async-function-with-timeout — `timeout=` parameters here are forwarded to httpx
+    "DOC201",   # `return` not in docstring — many helpers' return values are self-explanatory
+    "DOC501",   # Raised exception missing from docstring — re-raise patterns are pervasive
+    "DOC502",   # Raised exception not explicitly raised — same; we re-raise from helpers
+    "PLR2004",  # Magic value used in comparison — 5-minute / port-number constants are well-known
+    "PLR6301",  # Method could be a function — Protocol-conforming providers always take `self`
+    "S105",     # Hardcoded password string — flags constants like `JWT_CLAIM_PATH`/scope strings
+    "TRY004",   # Prefer TypeError for shape errors — keep RuntimeError so storage corruption is one type
+]
+"deepagents_cli/oauth_commands.py" = [
+    "DOC201",   # `return` not in docstring — many helpers' return values are self-explanatory
+    "DOC502",   # Raised exception not explicitly raised — re-raise patterns
+    "RUF029",   # async-without-await — async signature kept for symmetry with run_login
+    "S101",     # Use of assert — narrative invariant, not a security boundary
+]
+"deepagents_cli/_oauth_middleware.py" = [
+    "DOC201",   # `return` not in docstring — short helper docstrings stay concise
+    "D205",     # blank line after summary — pi-mono port references look better without
 ]
 
 [tool.coverage.run]

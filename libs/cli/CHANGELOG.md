@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **Subscription OAuth login.** New `deepagents login [provider]`,
+  `deepagents logout [provider]`, and `deepagents auth list` CLI
+  subcommands plus matching `/login`, `/logout` slash commands in the
+  TUI. Built-in providers: `anthropic` (Claude Pro/Max via PKCE +
+  local callback), `github-copilot` (RFC 8628 device flow with GitHub
+  Enterprise Server support), and `openai-codex` (ChatGPT Plus/Pro
+  Codex via PKCE + local callback, with `chatgpt_account_id` extracted
+  from the JWT). Tokens are persisted at
+  `~/.deepagents/.state/oauth-tokens/<provider>.json` (mode `0600`)
+  with atomic `tmp+rename` writes and `fcntl.flock`-based
+  cross-process serialization on the load → refresh → save sequence.
+* **OAuth-aware `create_model`.** `_get_provider_kwargs` now consults
+  OAuth storage when no `*_API_KEY` env var is set, refreshing
+  expired tokens transparently before returning ChatModel kwargs
+  (`api_key`, `betas`, `default_headers`, `base_url`). New
+  `github_copilot:*` and `openai_codex:*` provider keys route through
+  the corresponding `BaseChatModel` adapter classes.
+* **Per-request OAuth middleware.** `AnthropicOAuthIdentityMiddleware`
+  prepends the mandatory `"You are Claude Code, …"` system prompt
+  prefix and refreshes the access token before each request.
+  `GitHubCopilotHeadersMiddleware` injects per-call dynamic headers
+  (`X-Initiator`, `Copilot-Vision-Request`, `Openai-Intent`).
+  `OpenAICodexOAuthMiddleware` rotates the `chatgpt-account-id`
+  header alongside the JWT when Codex tokens refresh.
+* **Explicit refresh hook.** New `deepagents_cli.oauth.refresh_credentials(provider_id, credentials)`
+  forces a refresh under the same cross-process lock used by the
+  auto-refresh path, so callers holding long-lived chat clients can
+  rotate tokens proactively.
+
+### Bug Fixes (OAuth, pre-release)
+
+* Callback server enforces a wall-clock timeout (`DEFAULT_WAIT_TIMEOUT_SECONDS`)
+  so login can't hang on stale browser tabs, missing-code probes, or
+  abandoned tabs.
+* Bind the local callback to `localhost` so `asyncio.start_server`
+  resolves both IPv4 and IPv6 — previous `127.0.0.1`-only bind
+  silently missed redirects on dual-stack systems where browsers
+  prefer `::1`.
+* Anthropic OAuth `state` is now generated independently via
+  `secrets.token_hex(16)` instead of reusing the PKCE verifier; the
+  verifier no longer leaks through browser history, Referer headers,
+  or IdP logs.
+* Port-in-use degrades to manual paste-back instead of crashing the
+  login flow when the callback port is already bound.
+* `parse_authorization_input` strips a leading `?` so pasting a raw
+  query string from a redirect URL parses correctly.
+* GitHub Enterprise Server's REST API is now correctly addressed at
+  `<host>/api/v3/copilot_internal/v2/token`. The previous `api.<host>`
+  shape (inherited from pi-mono) 404'd on every GHE Server install.
+
 ## [0.0.48](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.47...deepagents-cli==0.0.48) (2026-05-01)
 
 ### Bug Fixes

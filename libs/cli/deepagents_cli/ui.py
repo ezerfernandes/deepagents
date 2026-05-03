@@ -437,6 +437,71 @@ def show_mcp_login_help() -> None:
     console.print()
 
 
+def show_login_help() -> None:
+    """Show help information for the `login` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print(f"  deepagents login {escape('[provider]')}")
+    console.print()
+    console.print("[bold]Providers:[/bold]", style=theme.PRIMARY)
+    console.print("  anthropic         Anthropic Claude Pro/Max")
+    console.print("  github-copilot    GitHub Copilot subscription")
+    console.print("  openai-codex      ChatGPT Plus/Pro Codex subscription")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents login")
+    console.print("  deepagents login anthropic")
+    console.print("  deepagents login github-copilot")
+    console.print()
+
+
+def show_logout_help() -> None:
+    """Show help information for the `logout` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print(f"  deepagents logout {escape('[provider]')}")
+    console.print()
+    console.print(
+        "Without a provider, removes credentials for every provider that "
+        "currently has stored credentials."
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents logout anthropic")
+    console.print("  deepagents logout")
+    console.print()
+
+
+def show_auth_help() -> None:
+    """Show help information for the `auth` subcommand group."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents auth <command>")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls           Show login status for each provider")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents auth list")
+    console.print()
+
+
+def show_auth_list_help() -> None:
+    """Show help information for the `auth list` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents auth list")
+    console.print()
+    _print_option_section()
+    console.print()
+
+
 def show_threads_help() -> None:
     """Show help information for the `threads` subcommand.
 

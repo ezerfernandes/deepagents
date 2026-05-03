@@ -1103,6 +1103,27 @@ def create_cli_agent(
     agent_middleware = []
     agent_middleware.append(ConfigurableModelMiddleware())
 
+    # OAuth shims: Anthropic Pro/Max requires a "You are Claude Code"
+    # system-prompt prefix; GitHub Copilot requires per-call dynamic
+    # headers (`X-Initiator`, `Copilot-Vision-Request`). Both are no-ops
+    # when the resolved model isn't using the corresponding OAuth path
+    # — it's safe to register them unconditionally, and we want them
+    # downstream of `ConfigurableModelMiddleware` so `/model` swaps are
+    # already resolved by the time we inspect the model.
+    from deepagents_cli._oauth_middleware import (
+        AnthropicOAuthIdentityMiddleware,
+        GitHubCopilotHeadersMiddleware,
+        OpenAICodexOAuthMiddleware,
+    )
+
+    agent_middleware.extend(
+        [
+            AnthropicOAuthIdentityMiddleware(),
+            GitHubCopilotHeadersMiddleware(),
+            OpenAICodexOAuthMiddleware(),
+        ]
+    )
+
     # Token state: adds _context_tokens to graph state (checkpointed, not
     # passed to model).  Must be registered before any middleware that might
     # read the channel.

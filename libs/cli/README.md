@@ -48,6 +48,38 @@ The fastest way to start using Deep Agents. `deepagents-cli` is a pre-built codi
 - **Custom skills** — extend the agent with your own slash commands
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
+- **Subscription OAuth** — sign in with **Anthropic Pro/Max**, **ChatGPT Plus/Pro (Codex)**, or **GitHub Copilot** instead of bring-your-own API keys
+
+## 🔐 Subscription OAuth (Pro/Max, ChatGPT, Copilot)
+
+Use your existing AI subscription instead of an API key:
+
+```bash
+deepagents login                  # interactive provider picker
+deepagents login anthropic        # Claude Pro/Max
+deepagents login github-copilot   # Copilot subscription (device flow)
+deepagents login openai-codex     # ChatGPT Plus/Pro Codex
+
+deepagents auth list              # show login status + token expiry
+deepagents logout [provider]      # forget stored credentials
+```
+
+The same flows are available inside the TUI as `/login`, `/logout`,
+and `/auth` slash commands.
+
+After signing in, point `--model` at the provider as usual:
+
+```bash
+deepagents --model anthropic:claude-sonnet-4-5
+deepagents --model github_copilot:claude-sonnet-4-5
+deepagents --model openai_codex:gpt-5-codex
+```
+
+OAuth tokens are persisted at `~/.deepagents/.state/oauth-tokens/<provider>.json`
+with mode `0600`, refreshed automatically before expiry, and serialized
+across concurrent CLI processes via `fcntl.flock` to avoid clobbering
+rotated refresh tokens. See the [threat model](./THREAT_MODEL.md) for
+the full data-flow analysis.
 
 ## 📖 Resources
 

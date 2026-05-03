@@ -3607,7 +3607,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /clear, /offload, /editor, /mcp, "
+                "Commands: /quit, /agents, /clear, /offload, /editor, "
+                "/login [provider], /logout [provider], /mcp, "
                 "/model [--model-params JSON] [--default], /notifications, "
                 "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
                 "/tokens, /threads, /trace, "
@@ -3737,6 +3738,10 @@ class DeepAgentsApp(App):
                 f"/skill:skill-creator {args}" if args else "/skill:skill-creator"
             )
             await self._handle_skill_command(rewritten)
+        elif cmd == "/login" or cmd.startswith("/login "):
+            await self._handle_login_command(command)
+        elif cmd == "/logout" or cmd.startswith("/logout "):
+            await self._handle_logout_command(command)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
         elif cmd == "/theme":
@@ -6432,6 +6437,99 @@ class DeepAgentsApp(App):
             self._notice_registry.remove(entry.key)
             return
         self._log_unknown_action(entry, action_id)
+
+    async def _handle_login_command(self, command: str) -> None:
+        """Handle the `/login [provider]` slash command.
+
+        OAuth flows touch the user's browser, the local TCP stack, and
+        prompt for paste-back input. Driving all three from inside a
+        running Textual session would deadlock the input loop, so we
+        tell the user exactly which CLI command to run in another
+        terminal — the underlying flow, refresh, and persistence are
+        identical regardless of which surface starts it.
+        """
+        from deepagents_cli.message_store import AppMessage, UserMessage
+        from deepagents_cli.oauth import list_providers
+
+        await self._mount_message(UserMessage(command))
+
+        argument = command.strip()[len("/login") :].strip()
+        providers = list_providers()
+        provider_lines = "\n".join(
+            f"    {p.id.ljust(20)} {p.name}" for p in providers
+        )
+
+        if argument:
+            target = argument.split()[0]
+            known = {p.id for p in providers}
+            if target not in known:
+                await self._mount_message(
+                    AppMessage(
+                        f"Unknown provider: {target}\n"
+                        f"Available providers:\n{provider_lines}"
+                    )
+                )
+                return
+            cmd_text = f"deepagents login {target}"
+        else:
+            cmd_text = "deepagents login"
+
+        await self._mount_message(
+            AppMessage(
+                "OAuth login runs in a separate terminal so the browser, "
+                "callback server, and paste-back prompts don't fight the "
+                "TUI input loop.\n\n"
+                f"Open a new terminal in the project root and run:\n"
+                f"    {cmd_text}\n\n"
+                f"Available providers:\n{provider_lines}\n\n"
+                "After login completes, type /reload here to pick up the "
+                "new credentials, or restart the session."
+            )
+        )
+
+    async def _handle_logout_command(self, command: str) -> None:
+        """Handle the `/logout [provider]` slash command.
+
+        Unlike login, logout is a pure local-state operation
+        (`delete_credentials` just unlinks the on-disk file), so we run
+        it inline.
+        """
+        from deepagents_cli.message_store import AppMessage, UserMessage
+        from deepagents_cli.oauth import (
+            delete_credentials,
+            list_logged_in_providers,
+        )
+
+        await self._mount_message(UserMessage(command))
+
+        argument = command.strip()[len("/logout") :].strip()
+
+        if argument:
+            target = argument.split()[0]
+            removed = delete_credentials(target)
+            if removed:
+                await self._mount_message(
+                    AppMessage(f"Logged out of {target}.")
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(f"No stored credentials for {target}.")
+                )
+            return
+
+        ids = list_logged_in_providers()
+        if not ids:
+            await self._mount_message(
+                AppMessage("No stored OAuth credentials to remove.")
+            )
+            return
+        for pid in ids:
+            delete_credentials(pid)
+        await self._mount_message(
+            AppMessage(
+                "Logged out of: " + ", ".join(ids) + "."
+            )
+        )
 
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""

@@ -278,6 +278,12 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    # `github_copilot` and `openai_codex` are OAuth-only providers; the
+    # env vars below are intentional fallbacks (a long-lived GitHub
+    # token / a manually-extracted ChatGPT JWT) for users who can't run
+    # `deepagents login` locally. Most users will sign in via OAuth and
+    # leave these unset.
+    "github_copilot": "GITHUB_TOKEN",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
@@ -287,6 +293,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "openai_codex": "OPENAI_CODEX_TOKEN",
     "openrouter": "OPENROUTER_API_KEY",
     "perplexity": "PPLX_API_KEY",
     "together": "TOGETHER_API_KEY",
@@ -809,17 +816,47 @@ def has_provider_credentials(provider: str) -> bool | None:
 
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
-    if env_var:
-        return bool(resolve_env_var(env_var))
+    if env_var and resolve_env_var(env_var):
+        return True
 
-    # Provider not found in config or hardcoded map — credential status is
-    # unknown. The provider itself will report auth failures at
-    # model-creation time.
+    # Stored OAuth credentials count as configured even when no env var
+    # is set — `_get_provider_kwargs` will pick them up and refresh as
+    # needed. Use a deferred import so the OAuth subpackage stays
+    # optional at module-import time.
+    if _has_oauth_credentials(provider):
+        return True
+
+    if env_var:
+        return False
+
+    # Provider not found in config, hardcoded map, or OAuth storage —
+    # credential status is unknown. The provider itself will report
+    # auth failures at model-creation time.
     logger.debug(
         "No credential information for provider '%s'; deferring auth to provider",
         provider,
     )
     return None
+
+
+def _has_oauth_credentials(provider: str) -> bool:
+    """Return whether the user has stored OAuth credentials for *provider*."""
+    try:
+        from deepagents_cli.oauth._kwargs import get_oauth_id_for_provider
+        from deepagents_cli.oauth.storage import load_credentials
+    except ImportError:
+        return False
+    oauth_id = get_oauth_id_for_provider(provider)
+    if oauth_id is None:
+        return False
+    try:
+        return load_credentials(oauth_id) is not None
+    except RuntimeError:
+        # Corrupt/incompatible token file — surface as "unset" so the
+        # caller raises a normal MissingCredentialsError. The user can
+        # delete the file and re-login per the recovery message
+        # `oauth.storage` already produced.
+        return False
 
 
 def get_credential_env_var(provider: str) -> str | None:
