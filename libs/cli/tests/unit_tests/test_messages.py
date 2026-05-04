@@ -130,7 +130,7 @@ class TestMutedRichMarkdown:
     )
 
     @staticmethod
-    def _render(renderable: object) -> str:
+    def _render(renderable: object, theme: object | None = None) -> str:
         import io
 
         from rich.console import Console
@@ -141,18 +141,32 @@ class TestMutedRichMarkdown:
             color_system="truecolor",
             width=80,
             legacy_windows=False,
+            no_color=False,
         )
-        console.print(renderable)
+        if theme is None:
+            console.print(renderable)
+        else:
+            with console.use_theme(theme):
+                console.print(renderable)
         return console.file.getvalue()  # type: ignore[attr-defined]
 
     def test_strips_heading_and_table_colors(self) -> None:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
         from rich.markdown import Markdown as RichMarkdown
+        from rich.theme import Theme
 
-        baseline = self._render(RichMarkdown(self._DOC))
-        muted = self._render(_MutedRichMarkdown(self._DOC))
+        theme = Theme(
+            {
+                "markdown.h3": "bold magenta",
+                "markdown.table.header": "bold cyan",
+                "markdown.table.border": "cyan",
+            },
+            inherit=True,
+        )
+        baseline = self._render(RichMarkdown(self._DOC), theme)
+        muted = self._render(_MutedRichMarkdown(self._DOC), theme)
 
-        # Default Rich theme paints `markdown.h3` magenta (ANSI code 35)
+        # The test-controlled theme paints `markdown.h3` magenta (ANSI code 35)
         # and `markdown.table.*` cyan (ANSI code 36).
         assert "\x1b[1;35m" in baseline
         assert "\x1b[36m" in baseline

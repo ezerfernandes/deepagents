@@ -1832,20 +1832,15 @@ def _get_default_model_spec() -> str:
 
     s = _get_settings()
     if s.has_openai:
-        return "openai:gpt-5.2"
+        return "openai:gpt-5.5"
     if s.has_anthropic:
-        return "anthropic:claude-sonnet-4-6"
+        return "anthropic:claude-opus-4-7"
     if s.has_google:
         return "google_genai:gemini-3.1-pro-preview"
-    if s.has_vertex_ai:
-        return "google_vertexai:gemini-3.1-pro-preview"
-    if s.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
     )
     raise ModelConfigError(msg)
 
@@ -1910,6 +1905,11 @@ def _ensure_cli_openrouter_profile_registered() -> None:
     _cli_openrouter_profile_registered = True
 
 
+_OPENAI_CODEX_CHAT_CLASS_PATH = (
+    "deepagents_cli.oauth.providers._openai_codex_chat:_CodexChatOpenAI"
+)
+"""Class path for the OpenAI Codex ChatGPT-backed chat model."""
+
 _BUILT_IN_OAUTH_CLASS_PATHS: dict[str, str] = {
     # GitHub Copilot exposes an Anthropic-compatible chat endpoint at
     # api.<flavor>.githubcopilot.com — `ChatAnthropic` drives it directly
@@ -1921,7 +1921,7 @@ _BUILT_IN_OAUTH_CLASS_PATHS: dict[str, str] = {
     # lifts `SystemMessage`s to top-level `instructions` (Codex rejects
     # `role: system` items in `input`). See
     # `oauth/providers/_openai_codex_chat.py` for the rationale.
-    "openai_codex": "deepagents_cli.oauth.providers._openai_codex_chat:_CodexChatOpenAI",
+    "openai_codex": _OPENAI_CODEX_CHAT_CLASS_PATH,
 }
 """Default `class_path` mapping for OAuth-only providers.
 
@@ -1957,7 +1957,11 @@ def _get_provider_kwargs(
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
-    from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
+    from deepagents_cli.model_config import (
+        OPTIONAL_AUTH_ENV,
+        PROVIDER_API_KEY_ENV,
+        resolve_env_var,
+    )
 
     api_key_env = config.get_api_key_env(provider)
     if not api_key_env:
@@ -1972,6 +1976,39 @@ def _get_provider_kwargs(
         api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    # `langchain-ollama` has no `api_key` kwarg; hosted Ollama (Cloud or
+    # gateway) needs the bearer token threaded through `client_kwargs.headers`.
+    if provider == "ollama":
+        optional_env = OPTIONAL_AUTH_ENV.get(provider)
+        optional_key = resolve_env_var(optional_env) if optional_env else None
+        if optional_key:
+            client_kwargs = result.get("client_kwargs")
+            if client_kwargs is not None and not isinstance(client_kwargs, dict):
+                logger.warning(
+                    "Provider 'ollama' has non-mapping client_kwargs (%s);"
+                    " skipping Authorization header injection",
+                    type(client_kwargs).__name__,
+                )
+            else:
+                client_kwargs = dict(client_kwargs) if client_kwargs else {}
+                headers = client_kwargs.get("headers")
+                if headers is not None and not isinstance(headers, dict):
+                    logger.warning(
+                        "Provider 'ollama' has non-mapping client_kwargs.headers"
+                        " (%s); skipping Authorization header injection",
+                        type(headers).__name__,
+                    )
+                else:
+                    headers = dict(headers) if headers else {}
+                    has_auth_header = any(
+                        isinstance(k, str) and k.lower() == "authorization"
+                        for k in headers
+                    )
+                    if not has_auth_header:
+                        headers["Authorization"] = f"Bearer {optional_key}"
+                        client_kwargs["headers"] = headers
+                        result["client_kwargs"] = client_kwargs
 
     # Fall through to OAuth-stored credentials when the env var is unset.
     # `oauth.get_access_token` auto-refreshes expired tokens, then we

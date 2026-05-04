@@ -92,10 +92,14 @@ def write_config(tmp_path: Path) -> Callable[..., str]:
 
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect `Path.home()` to a temp directory."""
+    """Redirect `Path.home()` and MCP token storage to a temp directory."""
     fake = tmp_path / "home"
     fake.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake))
+    monkeypatch.setattr(
+        "deepagents_cli.model_config.DEFAULT_STATE_DIR",
+        fake / ".deepagents" / ".state",
+    )
     return fake
 
 
