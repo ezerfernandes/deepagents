@@ -1,16 +1,16 @@
 # langchain-quickjs
 
-A [`deepagents`](../deepagents) middleware that gives an agent a persistent, sandboxed **JavaScript REPL** tool, backed by [`quickjs-rs`](../../../quickjs-wasm) (QuickJS embedded via PyO3 + rquickjs).
+A [`deepagents`](../../deepagents) middleware that gives an agent a persistent, sandboxed **JavaScript REPL** tool, backed by `quickjs-rs` (QuickJS embedded via PyO3 + rquickjs).
 
-Instead of issuing N serial tool calls, the model can write one block of JavaScript that orchestrates work in-loop — variables and functions defined in one call survive into the next, `Promise.all` runs concurrent work, and (opt-in) agent tools are callable from inside the REPL as `await tools.<name>(...)`.
+Instead of issuing N serial tool calls, the model can write one block of JavaScript that orchestrates work in-loop — variables and functions defined in one call survive into the next, `Promise.all` runs concurrent work, configured subagents are dispatchable as `await task({...})`, and (opt-in) agent tools are callable from inside the REPL as `await tools.<name>(...)`.
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 ```
 
@@ -23,8 +23,8 @@ agent = create_deep_agent(
   - [Console capture](#console-capture)
   - [Timeouts and memory](#timeouts-and-memory)
   - [Result formatting](#result-formatting)
+- [Dispatching subagents (`task`)](#dispatching-subagents-task)
 - [Programmatic tool calling (PTC)](#programmatic-tool-calling-ptc)
-- [Skills: importable JS/TS modules](#skills-importable-jsts-modules)
 - [Configuration reference](#configuration-reference)
 - [Errors the model can see](#errors-the-model-can-see)
 - [License](#license)
@@ -52,11 +52,11 @@ uv add langchain-quickjs
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 
 # Use `ainvoke` — PTC bridges register as async QuickJS host functions,
@@ -74,7 +74,11 @@ The middleware:
 
 ### Persistence
 
-The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls within the same run. Assign to `globalThis.X` to keep a value around under an explicit name.
+The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. The `mode` setting controls how far that persistence reaches:
+
+- `mode="thread"` (default) — state persists across calls **and** across turns in the same LangGraph `thread_id`.
+- `mode="turn"` — state persists across calls within a turn only.
+- `mode="call"` — each `eval` call runs in a fresh REPL.
 
 ```js
 // call 1
@@ -88,10 +92,7 @@ fib(10)  // 55
 
 The REPL runs in a QuickJS context with **no ambient capabilities**. There is no filesystem, no network, no `fetch`, no `require`, no real clock (`Date.now()` is whatever QuickJS provides, not wall-clock for security-sensitive uses), no `process`, no `import` of anything you didn't explicitly install.
 
-Escape hatches, if you want them, go through explicit middleware:
-
-- **PTC** — to call into the agent's own tools (see below).
-- **Skills** — to pre-install JS/TS modules the agent can `import`.
+Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below).
 
 ### Console capture
 
@@ -151,6 +152,52 @@ Results and stdout are independently truncated to `max_result_chars` (default 40
 
 Numeric rendering follows Node's REPL convention — whole-valued floats (`42.0`) render as integers (`42`) so the model isn't confused by JS's single numeric type.
 
+## Dispatching subagents (`task`)
+
+When the host agent is a Deep Agents agent that has a `task` tool, the middleware exposes a top-level `task(...)` primitive inside the REPL (on by default; disable with `subagents=False`). The model dispatches a configured subagent and orchestrates the rest — fan-out, filtering, multi-stage flow, synthesis — in plain JavaScript:
+
+```js
+const result = await task({
+  description: "Review src/auth.ts for SQL injection. Cite line numbers.",
+  subagentType: "reviewer",          // configured subagent name (required)
+  responseSchema: { /* JSON Schema */ }, // optional structured output
+});
+```
+
+`task` runs a full agentic loop for the selected subagent and resolves to its final result. With `responseSchema`, the resolved value is already a typed JS value matching the schema. Each dispatch is stateless — `description` is the only prompt the subagent receives, so make it self-contained.
+
+Because the model holds intermediate state in JS, it can fan out concurrently (the bridge caps concurrency per REPL), filter results between passes, and merge everything in one `eval` call instead of one model round-trip per subagent.
+
+This is distinct from PTC: `task` is always a top-level global (never under `tools`), and it is available whenever the host exposes a Deep Agents `task` tool — independent of the `ptc=` allowlist.
+
+```js
+// One eval call: classify in parallel, then deep-review only the risky files.
+const tagged = await Promise.all(files.map(async (f) => ({
+  file: f,
+  ...(await task({
+    description: `Classify ${f} as handler, util, test, or config.`,
+    subagentType: "reviewer",
+    responseSchema: {
+      type: "object",
+      properties: { kind: { type: "string" }, risky: { type: "boolean" } },
+      required: ["kind", "risky"],
+    },
+  })),
+})));
+
+const reviews = await Promise.all(
+  tagged.filter((t) => t.kind === "handler" && t.risky).map(async (t) => ({
+    file: t.file,
+    review: await task({
+      description: `Deep security review of ${t.file}. Cite line numbers.`,
+      subagentType: "reviewer",
+    }),
+  })),
+);
+```
+
+> **Approval:** `task(...)` runs inside an already-approved `eval` invocation and does **not** trigger parent-level `interrupt_on` / HITL approval per dispatch. Gate the `eval` tool itself, add approval middleware inside subagent specs, or set `subagents=False` if per-dispatch parent approval is required.
+
 ## Programmatic tool calling (PTC)
 
 PTC is the reason to use this middleware over a plain code-interpreter tool. When configured, each exposed tool is available inside the REPL as:
@@ -175,9 +222,9 @@ await tools.summarize({ text: results.join("\n\n") })
 ### Enabling it
 
 ```python
-REPLMiddleware()                              # disabled (default)
-REPLMiddleware(ptc=["search_web"])            # explicit allowlist
-REPLMiddleware(ptc=[search_tool])             # explicit tool object allowlist
+CodeInterpreterMiddleware()                              # disabled (default)
+CodeInterpreterMiddleware(ptc=["search_web"])            # explicit allowlist
+CodeInterpreterMiddleware(ptc=[search_tool])             # explicit tool object allowlist
 ```
 
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
@@ -202,46 +249,39 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 
 - Each PTC-exposed tool gets a QuickJS host-function bridge registered under a generated `__tools_*` global symbol. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
-- When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so subagent tools like `task` see graph `state`, `store`, `context`, and a synthesised child `tool_call_id`.
-- Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.
-
-## Skills: importable JS/TS modules
-
-If your agent uses `SkillsMiddleware` (from `deepagents`), any skill whose frontmatter includes a `module:` key becomes dynamically importable inside the REPL:
-
-```js
-const helpers = await import("@/skills/my-helpers");
-helpers.greet("world")
-```
-
-Under the hood:
-
-- At eval time, the middleware scans the source for literal `"@/skills/<name>"` specifiers.
-- For each referenced skill, it fetches the skill directory through your `BackendProtocol`, packages every typescript file into a module scope, and installs it under the bare specifier.
-- Installs are cached per-`Runtime` — each skill loads at most once, and a broken skill is cached as an error so it doesn't re-hit the backend every eval.
-- If a skill referenced in source isn't available or fails to install, the eval call short-circuits with `<error type="SkillNotAvailable">...</error>` — the model sees a clean failure instead of a guest-side `ReferenceError`.
-- Skills are isolated: one skill's scope can't bare-import another. Bundle shared code into each skill or re-export through a single skill.
-
-Enable it by passing the same `BackendProtocol` your `SkillsMiddleware` uses:
+- When the bridge invokes a tool, it forwards the `ToolRuntime` and runnable config captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, callbacks, and a synthesized child `tool_call_id`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
+- PTC calls participate in the standard LangGraph tool lifecycle. With v3 event streaming, they appear on `run.tool_calls` just like ordinary tool calls, including output deltas emitted through `ToolRuntime.emit_output_delta`:
 
 ```python
-REPLMiddleware(skills_backend=my_backend)
+run = agent.stream_events(
+    {"messages": [{"role": "user", "content": "Research and summarize this"}]},
+    version="v3",
+)
+
+for call in run.tool_calls:
+    print(call.tool_name, call.tool_call_id)
+    for delta in call.output_deltas:
+        print(delta)
 ```
 
-There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or prune generated code.
+This visibility does not route PTC calls through `ToolNode` or add per-call human-in-the-loop approval; the configured PTC allowlist remains the security boundary. The inner calls are not added as synthetic graph messages.
+
+- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place.
 
 ## Configuration reference
 
 ```python
-REPLMiddleware(
+CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
     timeout=5.0,                     # per-call seconds
     max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
+    subagents=True,                  # expose global `task(...)` when host has a Deep Agents task tool
+    mode="thread",                   # "thread" | "turn" | "call"
+    max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
-    skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )
 ```
 
@@ -255,10 +295,14 @@ REPLMiddleware(
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
-| `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |
 
 `asyncio.CancelledError` propagates out cleanly when JS declines to catch a `HostCancellationError` — so LangGraph cancellation semantics work end-to-end.
 
 ## License
 
 MIT. See [`LICENSE`](LICENSE)
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

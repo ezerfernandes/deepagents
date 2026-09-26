@@ -60,3 +60,39 @@ def _reset_deprecation_dedupe() -> None:
     emission become reorder-sensitive.
     """
     reset_deprecation_dedupe(*_DEDUPED_TARGETS)
+
+
+@pytest.fixture(autouse=True)
+def _reset_video_dep_cache() -> None:
+    """Clear the `lru_cache` on `video_dependencies_available` before each test.
+
+    The function caches its result for the process lifetime so repeated
+    `FilesystemMiddleware` construction stays cheap. Tests that monkeypatch
+    `importlib.util.find_spec` (or rely on the real environment) need the cache
+    cleared so they observe their own probe result rather than a stale value
+    from an earlier test.
+    """
+    from deepagents.middleware._video import video_dependencies_available  # noqa: PLC0415
+
+    video_dependencies_available.cache_clear()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _bootstrap_profile_registries() -> None:
+    """Force the lazy profile bootstrap before any test snapshots the registries.
+
+    Tests across multiple modules use the `original = dict(_HARNESS_PROFILES)` /
+    `_PROVIDER_PROFILES` save-and-restore pattern. If the lazy bootstrap is first
+    triggered *inside* such a `try` block (via `register_*_profile`), `original`
+    captures an empty registry and the `finally` `clear()` + `update(original)`
+    wipes the built-ins — and because the bootstrap sets `_loaded=True`, no
+    later test re-populates them. The next module that depends on built-in
+    profiles then sees `_get_harness_profile(...)` return `None`. Bootstrapping
+    here at session scope guarantees every test in every module starts with a
+    fully populated registry.
+    """
+    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+        _ensure_builtin_profiles_loaded,
+    )
+
+    _ensure_builtin_profiles_loaded()

@@ -14,17 +14,21 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests.benchmarks._common import (
     CONSOLE_LOG_CODE,
     PTC_ONLY_CODE,
+    assert_counter_turn_values,
     assert_eval_succeeded,
     echo_payload,
     invoke_payload,
     make_agent,
+    run_counter_turns,
 )
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from pytest_benchmark.fixture import BenchmarkFixture
 
 
@@ -40,7 +44,7 @@ class TestQuickJSMemoryBenchmarks:
         use_ptc: bool,
     ) -> None:
         def _worker(index: int) -> None:
-            middleware = REPLMiddleware(
+            middleware = CodeInterpreterMiddleware(
                 timeout=45.0,
                 capture_console=True,
                 ptc=[echo_payload] if use_ptc else None,
@@ -54,6 +58,21 @@ class TestQuickJSMemoryBenchmarks:
 
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             list(executor.map(_worker, range(thread_count)))
+
+    def _run_multiturn_memory_workload(
+        self,
+        *,
+        turn_count: int,
+        mode: Literal["thread", "turn"],
+    ) -> None:
+        values = run_counter_turns(
+            turn_count=turn_count,
+            mode=mode,
+        )
+        assert_counter_turn_values(
+            values=values,
+            mode=mode,
+        )
 
     @pytest.mark.parametrize(
         "thread_count", [1, 8, 32, 64], ids=lambda n: f"{n}_threads"
@@ -86,3 +105,29 @@ class TestQuickJSMemoryBenchmarks:
 
         benchmark.extra_info["scenario"] = scenario
         benchmark.extra_info["thread_count"] = thread_count
+
+    @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
+    @pytest.mark.parametrize(
+        "mode",
+        ["turn", "thread"],
+        ids=["mode_turn", "mode_thread"],
+    )
+    def test_multiturn_snapshot_memory_peak(
+        self,
+        benchmark: BenchmarkFixture,
+        turn_count: int,
+        mode: Literal["thread", "turn"],
+    ) -> None:
+        """Measure memory cost of multi-turn execution with optional snapshots."""
+
+        @benchmark
+        def _() -> None:
+            self._run_multiturn_memory_workload(
+                turn_count=turn_count,
+                mode=mode,
+            )
+
+        benchmark.extra_info["scenario"] = "multi_turn_snapshot_restore"
+        benchmark.extra_info["thread_count"] = 1
+        benchmark.extra_info["turn_count"] = turn_count
+        benchmark.extra_info["mode"] = mode

@@ -4,51 +4,36 @@ Run locally:  `make benchmark`
 Run with CodSpeed:  `uv run --group test pytest ./tests -m benchmark --codspeed`
 
 These tests measure throughput for many single-thread eval iterations where the
-workload combines PTC tool calls with ``console.log`` output.
+workload combines PTC tool calls with `console.log` output.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests.benchmarks._common import (
     PTC_AND_CONSOLE_CODE,
     THROUGHPUT_ITERATIONS,
-    FakeChatModel,
+    assert_counter_turn_values,
     assert_eval_succeeded,
     echo_payload,
     invoke_payload,
     make_agent,
-    tool_call_message,
+    run_counter_turns,
 )
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from pytest_benchmark.fixture import BenchmarkFixture
 
 
 @pytest.mark.benchmark
 class TestQuickJSThroughputBenchmarks:
     """Benchmarks that track eval throughput for hot single-thread loops."""
-
-    def _make_multi_turn_agent(
-        self,
-        *,
-        middleware: REPLMiddleware,
-        codes: list[str],
-    ) -> Any:
-        messages: list[AIMessage] = []
-        for index, code in enumerate(codes):
-            messages.append(tool_call_message(code, call_id=f"call_{index}"))
-            messages.append(AIMessage(content="done"))
-        return create_deep_agent(
-            model=FakeChatModel(messages=iter(messages)),
-            middleware=[middleware],
-        )
 
     def _record_turn_metrics(
         self,
@@ -70,7 +55,7 @@ class TestQuickJSThroughputBenchmarks:
         benchmark: BenchmarkFixture,
     ) -> None:
         """Measure throughput for many eval calls in one thread and process."""
-        middleware = REPLMiddleware(capture_console=True, ptc=[echo_payload])
+        middleware = CodeInterpreterMiddleware(capture_console=True, ptc=[echo_payload])
 
         @benchmark
         def _() -> None:
@@ -93,3 +78,38 @@ class TestQuickJSThroughputBenchmarks:
             benchmark=benchmark,
             turns_per_round=THROUGHPUT_ITERATIONS,
         )
+
+    @pytest.mark.throughput_benchmark
+    @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
+    @pytest.mark.parametrize(
+        "mode",
+        ["turn", "thread"],
+        ids=["mode_turn", "mode_thread"],
+    )
+    def test_multi_turn_snapshot_throughput(
+        self,
+        benchmark: BenchmarkFixture,
+        turn_count: int,
+        mode: Literal["thread", "turn"],
+    ) -> None:
+        """Measure throughput across explicit multi-turn REPL lifecycle calls."""
+
+        def _run_round() -> None:
+            values = run_counter_turns(
+                turn_count=turn_count,
+                mode=mode,
+            )
+            assert_counter_turn_values(
+                values=values,
+                mode=mode,
+            )
+
+        @benchmark
+        def _() -> None:
+            _run_round()
+
+        benchmark.extra_info["thread_count"] = 1
+        benchmark.extra_info["turn_count"] = turn_count
+        benchmark.extra_info["mode"] = mode
+        benchmark.extra_info["workload"] = "multi_turn_snapshot_restore"
+        self._record_turn_metrics(benchmark=benchmark, turns_per_round=turn_count)

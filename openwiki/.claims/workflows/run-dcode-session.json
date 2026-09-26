@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:b5db2c950cd23c37a5932b06c334ed8a83ee8141709e55fea495917d0aec47b2",
+  "claims": [
+    {
+      "id": "claim_477654aa6598456fa3add53b5c307cf3",
+      "statement": "dcode normally launches an interactive terminal session, while `-n` performs one headless task and `--acp` serves ACP over standard input and output.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/README.md",
+          "version": "repo-file-v1:sha256:e60c5d8ed621da6295979be92d4bb2ff1f7c006798ff402888f357ba000a25d1"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/ui.py",
+          "version": "repo-file-v1:sha256:f8cb8d4df30d9ab7aaf44f419d721b1b4883c23cf9707d5201c2e78f19f67940"
+        }
+      ]
+    },
+    {
+      "id": "claim_0a5d90afa16d4c59b4a1168af8a59d93",
+      "statement": "Interactive and headless operation start a temporary loopback LangGraph server, wait for its graph, bind a RemoteAgent to the workspace, and tear the subprocess down on failed startup or normal exit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
+          "version": "repo-file-v1:sha256:018c6b8b6df71514c17b534374fb36253c9946de043bad744f5d95f7eb18b806"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py",
+          "version": "repo-file-v1:sha256:246d0d51a9de83eccddb8453fa81427effcca170ddc8788b52c15329f3326abf"
+        }
+      ]
+    },
+    {
+      "id": "claim_4af744ca1ec04804b67d45586dfc5402",
+      "statement": "Headless execution creates a new thread, gates shell access through the shell allow-list, and uses exit 124 when its turn or timeout budget expires.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py",
+          "version": "repo-file-v1:sha256:246d0d51a9de83eccddb8453fa81427effcca170ddc8788b52c15329f3326abf"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py",
+          "version": "repo-file-v1:sha256:c1892aa6062f376a8a02c7829e1dd8ee2511a17705e25efb8a606014207a1e83"
+        }
+      ]
+    },
+    {
+      "id": "claim_fd4bba1559a24013bd4c6dcf04728ffc",
+      "statement": "A workspace binding is durably validated by the server before graph execution; policy drift is rejected, while runtime-only identity changes rebuild the runtime.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:16730b209eee13a8145b533692f278edeb4bd6eb55d0ec5e187acffb4f228a07"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py",
+          "version": "repo-file-v1:sha256:921cbbd118970388dfbda8942c951a50f366ddf8bc78ae9ca52f97bb4a76860d"
+        }
+      ]
+    },
+    {
+      "id": "claim_ba4c2ae77de345988a5b78507b589e29",
+      "statement": "Model retry middleware retries transient model-node failures without rerunning completed tool calls, uses per-request model retry settings, and re-raises a terminal provider failure instead of returning it as an AI response.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:e2d9f2296d26fb8e12de41f18f74e41a84cde3b91b4985f750f8522d3af8d68d"
+        }
+      ]
+    },
+    {
+      "id": "claim_e64a316afafb4ebdaae890a0bb8f7363",
+      "statement": "Correlated retry and model-attempt stream events enable TUI and headless clients to reconcile tentative state and visibly distinguish partial streamed output from a replayed response.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py",
+          "version": "repo-file-v1:sha256:246d0d51a9de83eccddb8453fa81427effcca170ddc8788b52c15329f3326abf"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py",
+          "version": "repo-file-v1:sha256:e2d9f2296d26fb8e12de41f18f74e41a84cde3b91b4985f750f8522d3af8d68d"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py",
+          "version": "repo-file-v1:sha256:1dbe2380410d34324ced36db70a11e89688a0c1cb01868f48b820d6db9262d81"
+        }
+      ]
+    },
+    {
+      "id": "claim_21eab2fb63984e228d9c8728f95a6658",
+      "statement": "TUI resume selects the most-recent or named thread subject to configured age policy, handles missing threads and database errors by falling back to a fresh session, and can offer a stored-working-directory switch.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py",
+          "version": "repo-file-v1:sha256:373376fc39db928b6a6a924c5653d91a7fc28540286af85f52c7657d68588c15"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py",
+          "version": "repo-file-v1:sha256:4056858eed5016b2b1e0ca311701057c29b0203e2dddcb891094d9607bd7cd5a"
+        }
+      ]
+    },
+    {
+      "id": "claim_0b27a0d5a7744cdca402c3cfc30afe20",
+      "statement": "ACP runs independently from the temporary RemoteAgent server session, constructing its own model, MCP tools, SQLite checkpointer, and ACP agent context.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py",
+          "version": "repo-file-v1:sha256:c1892aa6062f376a8a02c7829e1dd8ee2511a17705e25efb8a606014207a1e83"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c0ee962d6014f8fb24810bd3f003884",
+      "statement": "Development debug mode preserves the server log and attaches a per-thread client log, while the in-app debug console remains available when secure file logging cannot be used.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/DEVELOPMENT.md",
+          "version": "repo-file-v1:sha256:7ac33465793ad8c5c3dbf8348b83f6b0c2e84a997a0dee56186a231ae418c0fb"
+        }
+      ]
+    },
+    {
+      "id": "claim_f587b11698e44703b1157f7f74da59fb",
+      "statement": "Focused tests cover headless approval behavior, retry semantics and streaming failures, app startup behavior, and safe input parsing for thread references and malformed paths.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py",
+          "version": "repo-file-v1:sha256:13b427f701e890afbc35230aba5e93044a8be73fd8a5e0818be44a87295d8c87"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_input_parsing.py",
+          "version": "repo-file-v1:sha256:48c02630dba5da53fb146192f85f4ecf8f452ff90cbb3438d98254213049ca70"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py",
+          "version": "repo-file-v1:sha256:644ba6bc3a93ebb44bc9cc66403820bea8984bca58db37fae731af4a841726c4"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_non_interactive.py",
+          "version": "repo-file-v1:sha256:592a14a312a1e1e759d689a2cb56d7a1784468313c9837c1a01033ad48f54aeb"
+        }
+      ]
+    },
+    {
+      "id": "claim_fc0d5f9fb5e94ef0807433d29ceae7a6",
+      "statement": "Interactive startup resolves a displayable model identity before provider construction, defers server startup when credentials are absent, and passes resolved model, policy, sandbox, and MCP options to the server-backed TUI session.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3261-L3407",
+          "version": "repo-lines-v1:sha256:8c2c1ee988dbad33e86cce3ef42d48be43f7ad8e1dcf1ce95c2da767b9c0736a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMzdjM2U3MTc0NDc0NTNlYmZjNGRmMDdjNWU1ZWFjNWNkZDhiMjEzZmRlZDEwM2NmOTZhYTMzZjUyNDM1ZmNlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjYjc1Zjg0MTIwMjUyYjUzMjk5YTEzODY5NzdjMzllZDM0NTdkMTcyNTM2ODE1MGY1YjI1Zjc1NjMwYjVlMjBjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNDhkN2E3ZGRiNDkwMjYxYzM1MDE1ZGYzZTk3NWJmYTAxZWI0ZjVjNTcxMzZjMDQzZmQzMDMzMTFjNjg5YWYxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMjM5ZDdiMTA0NjI0NmEwMWQ0NmNhMTEwOGMxYzJhY2E3NTZlMDA0NjI3NzNkNmM4MGUzNzUzMDM3MWVhYzk0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_848c0a80622c43a59229e148ef4acd53",
+      "statement": "Workspace refusal diagnostics persist and report only an allowlisted bounded policy snapshot; they exclude paths, credentials, environment values, model details, prompts, and profile overrides.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace_diagnostics.py#L3-L14",
+          "version": "repo-lines-v1:sha256:03033c4d0939727db55da23de3dc47048dcf430b3d610a7b07942c621665a6d2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNzA3NjNjOWIyYTJjYzYxY2M4NDBhZGJmMDNiODBhYWU4YjcwNDc5YWU1ZDViMjU2MGRhY2Y1YmRhMGNiZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MThjZTI4NjE5MDMzNGYyYmFjNDA0MDI1YWQ4NGI0MjJlYmJkZDBkM2JiZjAxMmJlNjUxMWM4MGU4ODYyNzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZGNmOTk3ZjI2MWVkZTM3YmE2ZjE1Yjg2ODE2ZGRjMmQ5YjFhOGExNmUzNDBiYzQxODhjY2JlOTQ4NzRlMmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace_diagnostics.py#L43-L115",
+          "version": "repo-lines-v1:sha256:8905ae3c28b5ebfcc440896ece2a3e99fca5426ae837a90f47a2d80f9c0dd30c:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDQ1MWI2YTVmN2FjYWUyZDdkZTM3ZWRiNjExZWJjOWZjM2VjMGMwNjQ3NDgzMDhiYmU0ZjBiMjg5ZjQzNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZGY2MmYzYTkxMGViN2M2MjBlMjUzNDU5OTAzMTBkYzc2NWY1MjY4OThmZjI0YmEyYmZiODcwNjliZDNiMjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjViNTJhODc4N2E4OWEyZjIwYzE0ZjJlNTZiNTliMWU4MWQ5Njg1MDc4MDY5ZmNmMzU5MjQ3MGEwMzczOTk3ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_133486bf0eb6435bb7e604ebbb794fb7",
+      "statement": "MCP login uses the same source discovery and trust filtering as runtime loading: explicit config is loaded directly, while discovered project servers require applicable trust and persisted approval policy.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py#L197-L387",
+          "version": "repo-lines-v1:sha256:80eb419e676c73844053b1a9feb0ed0b6938d7d62e65b19e89a82cdafeffde85:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyOGU3MmFmYThlZDY0MGI2YTNjZTY5OTJmZDA2MjU1NGEyZWM2ZWQxM2NhMzQzZDBmMjQwZDQ3MDIwOWFlMWM5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Y2RlMTgwYmFmZTA1MWY1MjBjMTBiYWQ3Zjg4NWMyMWYwODFiOThlNzYzMmFlNDgxMjVjOTkwODczZjkzYTEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhZjUwZjIxN2FlZmFhMGEwMzNhYTllOWZlN2VhNjA1OGNkY2FhZTU3MWUxNTc2Yzk0OTJmODg4ZGI2YTdhNDNjIn0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-25T08:06:00.203Z"
+  }
+}

@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     get_model_identifier,
     get_model_provider,
+    is_bedrock_model,
     model_matches_spec,
     resolve_model,
 )
@@ -30,7 +31,13 @@ from deepagents.profiles.harness.harness_profiles import (
     _merge_middleware,
     _merge_profiles,
 )
+from deepagents.profiles.provider._nvidia import (
+    _NVIDIA_APP_ORIGIN,
+    _NVIDIA_BILLING_ORIGIN_HEADER,
+    _nvidia_attribution_kwargs,
+)
 from deepagents.profiles.provider._openrouter import (
+    _OPENROUTER_ALLOW_AZURE_ENV,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
     OPENROUTER_MIN_VERSION,
@@ -43,26 +50,21 @@ from deepagents.profiles.provider.provider_profiles import (
     apply_provider_profile,
     get_provider_profile,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
+
+_OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
+"""Expected default value of `openrouter_provider` injected by the SDK profile."""
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _bootstrap_profile_registries() -> None:
-    """Force the lazy profile bootstrap before any test snapshots the registries.
+@pytest.fixture(autouse=True)
+def _scrub_openrouter_allow_azure_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pop `DEEPAGENTS_OPENROUTER_ALLOW_AZURE` before each test.
 
-    Many tests in this module use `original = dict(_PROVIDER_PROFILES)` /
-    `_HARNESS_PROFILES` plus a `finally`-clause `clear` + `update(original)` to
-    restore registry state. That pattern relies on `original` already containing
-    the built-in profiles. When the bootstrap is triggered for the first time
-    *inside* the `try` (via `register_*_profile`), `original` is empty and the
-    `finally` block wipes the registry — leaving `_loaded=True` so subsequent
-    tests on the same xdist worker see an empty registry. Bootstrapping here
-    guarantees `original` captures the post-bootstrap state.
+    Otherwise an ambient `DEEPAGENTS_OPENROUTER_ALLOW_AZURE=1` in the
+    developer's shell or CI environment would suppress the `openrouter_provider`
+    kwarg the SDK profile injects, silently breaking assertions that expect it.
     """
-    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
-        _ensure_builtin_profiles_loaded,
-    )
-
-    _ensure_builtin_profiles_loaded()
+    monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
 
 
 def _make_model(attrs: dict) -> MagicMock:
@@ -103,6 +105,20 @@ class TestResolveModel:
             "openrouter:anthropic/claude-sonnet-4-6",
             app_url=_OPENROUTER_APP_URL,
             app_title=_OPENROUTER_APP_TITLE,
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+        assert result is mock.return_value
+
+    def test_nvidia_prefix_sets_billing_origin(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        mock.assert_called_once_with(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            default_headers={
+                _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+            },
         )
         assert result is mock.return_value
 
@@ -118,6 +134,7 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert "app_url" not in kwargs
         assert kwargs["app_title"] == _OPENROUTER_APP_TITLE
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_var_overrides_app_title(self) -> None:
         env = {"OPENROUTER_APP_TITLE": "My Custom App"}
@@ -131,11 +148,30 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert kwargs["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in kwargs
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_vars_override_both(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://custom.app",
             "OPENROUTER_APP_TITLE": "My Custom App",
+        }
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch.dict("os.environ", env),
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openrouter:anthropic/claude-sonnet-4-6")
+
+        mock.assert_called_once_with(
+            "openrouter:anthropic/claude-sonnet-4-6",
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+
+    def test_openrouter_allow_azure_env_drops_provider_kwarg(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://custom.app",
+            "OPENROUTER_APP_TITLE": "My Custom App",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
         }
         with (
             patch("deepagents._models.init_chat_model") as mock,
@@ -202,6 +238,65 @@ class TestGetModelProvider:
         model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
         assert get_model_provider(model) is None
 
+    def test_returns_none_when_get_ls_params_returns_non_mapping(self) -> None:
+        # A custom integration may return `None` instead of a mapping; this
+        # must not raise `AttributeError` on the subsequent `.get`.
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value=None)
+        assert get_model_provider(model) is None
+
+
+class TestIsBedrockModel:
+    """Tests for `is_bedrock_model`."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock_converse:us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "aws:amazon.nova-pro-v1:0",
+            "anthropic_bedrock:us.anthropic.claude-sonnet-4-6-20251117-v1:0",
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_detects_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "amazon.titan-text-express-v1:0",
+            "anthropic:claude-3-opus",
+            "openai:gpt-5",
+        ],
+    )
+    def test_rejects_non_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is False
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["amazon_bedrock", "anthropic-bedrock", "bedrock", "bedrock_converse", "aws"],
+    )
+    def test_detects_bedrock_model_providers(self, provider: str) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": provider})
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        ["ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"],
+    )
+    def test_detects_bedrock_model_classes_when_provider_unavailable(self, model_cls: str) -> None:
+        model = type(model_cls, (GenericFakeChatModel,), {})(messages=iter([]))
+        model._get_ls_params = MagicMock(return_value={})
+        assert is_bedrock_model(model) is True
+
+    def test_rejects_non_bedrock_model_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert is_bedrock_model(model) is False
+
 
 class TestModelMatchesSpec:
     """Tests for `model_matches_spec`."""
@@ -211,8 +306,64 @@ class TestModelMatchesSpec:
         assert model_matches_spec(model, "claude-sonnet-4-6") is True
 
     def test_provider_prefixed_match(self) -> None:
+        # Set `ls_provider` explicitly so this exercises the provider-match
+        # path rather than the identifier-only fallback (an unset mock returns
+        # a non-mapping, which would route through the fallback instead).
         model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_checks_provider_when_available(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai"})
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is False
+
+    def test_provider_match_normalizes_langsmith_provider_spelling(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai-codex"})
+
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is True
+
+    def test_provider_match_normalizes_spec_provider_spelling(self) -> None:
+        # The reverse of the case above: a hyphenated spec must match an
+        # underscored `ls_provider`. Normalization is applied to both operands,
+        # so neither spelling direction should read as a mismatch.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai_codex"})
+
+        assert model_matches_spec(model, "openai-codex:gpt-5.5") is True
+
+    @pytest.mark.parametrize(
+        ("spec_provider", "ls_provider"),
+        [
+            ("azure_openai", "azure"),
+            ("mistralai", "mistral"),
+            ("nvidia", "NVIDIA"),
+        ],
+    )
+    def test_provider_match_normalizes_langchain_provider_aliases(self, spec_provider: str, ls_provider: str) -> None:
+        model = _make_model({"model_name": "provider-model"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": ls_provider})
+
+        assert model_matches_spec(model, f"{spec_provider}:provider-model") is True
+
+    def test_provider_prefixed_match_falls_back_when_provider_unknown(self) -> None:
+        model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={})
+
+        assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_falls_back_when_ls_params_non_mapping(
+        self,
+    ) -> None:
+        # `_get_ls_params` returning `None` must fall back to identifier-only
+        # matching rather than raising `AttributeError` out of the match.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value=None)
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
 
     def test_no_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})
@@ -224,7 +375,45 @@ class TestModelMatchesSpec:
 
     def test_bare_spec_without_colon_no_false_positive(self) -> None:
         model = _make_model({"model_name": "gpt-5"})
-        assert model_matches_spec(model, "gpt-4o") is False
+        assert model_matches_spec(model, "gpt-5.5") is False
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "glm-5.2:cloud",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_bare_spec_matches_colon_containing_identifier(self, identifier: str) -> None:
+        """A bare spec equal to the identifier matches even when it holds colons.
+
+        The spec is not provider-qualified, so it must be compared whole. A
+        partition-first implementation would read the leading segment as a
+        provider and fail these.
+        """
+        model = _make_model({"model_name": identifier})
+        assert model_matches_spec(model, identifier) is True
+
+    def test_qualified_spec_matches_colon_containing_identifier(self) -> None:
+        """Only the first colon separates; the rest belongs to the identifier."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "ollama:glm-5.2:cloud") is True
+
+    def test_qualified_spec_checks_provider_on_colon_containing_identifier(self) -> None:
+        """A matching multi-colon identifier is still refused on provider mismatch."""
+        model = _make_model({"model_name": "glm-5.2:cloud"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+        assert model_matches_spec(model, "openai:glm-5.2:cloud") is False
+
+    def test_qualified_spec_matches_bedrock_arn_identifier(self) -> None:
+        """Bedrock ARNs carry colons throughout, including an empty account field."""
+        arn = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0"
+        model = _make_model({"model_name": arn})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "bedrock_converse"})
+        assert model_matches_spec(model, f"bedrock_converse:{arn}") is True
+        assert model_matches_spec(model, f"openai:{arn}") is False
 
 
 class TestCheckOpenRouterVersion:
@@ -292,6 +481,7 @@ class TestOpenRouterAttributionKwargs:
         assert result == {
             "app_url": _OPENROUTER_APP_URL,
             "app_title": _OPENROUTER_APP_TITLE,
+            "openrouter_provider": _OPENROUTER_AZURE_IGNORE,
         }
 
     def test_omits_app_url_when_env_set(self) -> None:
@@ -300,6 +490,7 @@ class TestOpenRouterAttributionKwargs:
 
         assert "app_url" not in result
         assert result["app_title"] == _OPENROUTER_APP_TITLE
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_omits_app_title_when_env_set(self) -> None:
         with patch.dict("os.environ", {"OPENROUTER_APP_TITLE": "Custom"}):
@@ -307,8 +498,9 @@ class TestOpenRouterAttributionKwargs:
 
         assert result["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in result
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
-    def test_empty_when_both_env_set(self) -> None:
+    def test_only_provider_kwarg_when_both_attribution_env_set(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://example.com",
             "OPENROUTER_APP_TITLE": "Custom",
@@ -316,7 +508,39 @@ class TestOpenRouterAttributionKwargs:
         with patch.dict("os.environ", env):
             result = _openrouter_attribution_kwargs()
 
+        assert result == {"openrouter_provider": _OPENROUTER_AZURE_IGNORE}
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "YES", "on", "ON", " yes "])
+    def test_allow_azure_env_truthy_drops_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert "openrouter_provider" not in result
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "anything-else"])
+    def test_allow_azure_env_non_truthy_keeps_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
+
+    def test_empty_when_all_env_set_and_azure_allowed(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://example.com",
+            "OPENROUTER_APP_TITLE": "Custom",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
+        }
+        with patch.dict("os.environ", env):
+            result = _openrouter_attribution_kwargs()
+
         assert result == {}
+
+    def test_caller_openrouter_provider_wins_over_default(self) -> None:
+        """User-supplied `openrouter_provider` overrides the SDK Azure-ignore default."""
+        caller = {"openrouter_provider": {"order": ["fireworks"]}}
+        result = apply_provider_profile("openrouter:openai/gpt-5", caller, run_pre_init=False)
+
+        assert result["openrouter_provider"] == {"order": ["fireworks"]}
 
 
 class TestProviderProfile:
@@ -367,15 +591,68 @@ class TestProviderProfileRegistry:
         assert get_provider_profile("") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd model spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = ProviderProfile(init_kwargs={"a": 1})
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("fbprov", base)
-            assert get_provider_profile("fbprov:missing-model") is base
+            assert get_provider_profile("fbprov:missing:model") is base
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = ProviderProfile(init_kwargs={"priority": "provider"})
+        exact = ProviderProfile(init_kwargs={"priority": "model"})
+        provider = key.partition(":")[0]
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(provider, base)
+            register_provider_profile(key, exact)
+            assert get_provider_profile(key).init_kwargs["priority"] == "model"
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestProviderProfileMissLogging:
+    """Optional provider profiles leave misses traceable at debug level."""
+
+    @pytest.mark.parametrize("registered", [False, True])
+    def test_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture, *, registered: bool) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            if registered:
+                register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile("acmee:thing") == {}
+            records = [r for r in caplog.records if "No provider profile matched" in r.getMessage()]
+            assert records, "Expected a provider-profile-miss log record"
+            assert all(r.levelno == logging.DEBUG for r in records)
+            assert any("acmee:thing" in r.getMessage() for r in records)
+
+    def test_successful_lookup_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile("acme:thing") == {"base_url": "http://acme"}
+            assert not [r for r in caplog.records if "No provider profile matched" in r.getMessage()]
+
+    @pytest.mark.parametrize("spec", ["acme:", ":thing", ""])
+    def test_malformed_spec_records_the_reason(self, spec: str, caplog: pytest.LogCaptureFixture) -> None:
+        with patch.dict(_PROVIDER_PROFILES):
+            register_provider_profile("acme", ProviderProfile(init_kwargs={"base_url": "http://acme"}))
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
+                assert apply_provider_profile(spec) == {}
+            assert any("no ProviderProfile lookup performed" in r.getMessage() for r in caplog.records)
 
 
 class TestApplyProviderProfile:
@@ -686,12 +963,34 @@ class TestHarnessProfileRegistry:
         assert _get_harness_profile("claude-sonnet-4-6") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
-        """A typo'd spec should fall back to the provider profile, not None."""
+        """A colon-containing model identifier can fall back to its provider."""
         base = HarnessProfile(system_prompt_suffix="provider suffix")
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile("fbharness", base)
-            assert _get_harness_profile("fbharness:missing-model") is base
+            assert _get_harness_profile("fbharness:missing:model") is base
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ollama:glm-5.2:cloud",
+            "amazon_bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "bedrock_converse:arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/example",
+            "bedrock_converse:arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_colon_containing_model_identifier_exact_match_wins(self, key: str) -> None:
+        base = HarnessProfile(system_prompt_suffix="provider")
+        exact = HarnessProfile(system_prompt_suffix="model")
+        provider = key.partition(":")[0]
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(provider, base)
+            register_harness_profile(key, exact)
+            assert _get_harness_profile(key).system_prompt_suffix == "model"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -979,6 +1278,10 @@ class TestBuiltInProfiles:
         profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
+
+    def test_nvidia_provider_profile_has_attribution_factory(self) -> None:
+        profile = get_provider_profile("nvidia:nvidia/nemotron-3-super-120b-a12b")
+        assert profile.init_kwargs_factory is _nvidia_attribution_kwargs
 
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
@@ -1531,7 +1834,7 @@ class TestLazyBootstrap:
 
     The bootstrap runs on first registry access rather than at
     `deepagents.profiles` import to keep cold-importing
-    `deepagents._models` (and therefore `deepagents_cli` startup) cheap
+    `deepagents._models` (and therefore `dcode` startup) cheap
     when the caller never reads the registry. Each test here spawns a
     subprocess to get a clean interpreter — once the in-process bootstrap
     has run for any earlier test, `_loaded` cannot be observed as `False`
@@ -1619,6 +1922,26 @@ class TestResolveModelWithProviderProfiles:
         _, kwargs = mock.call_args
         assert "app_url" in kwargs or "app_title" in kwargs
 
+    def test_nvidia_runs_attribution_factory(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        _, kwargs = mock.call_args
+        assert kwargs["default_headers"] == {
+            _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+        }
+
+    def test_nvidia_caller_headers_override_attribution_default(self) -> None:
+        custom_headers = {_NVIDIA_BILLING_ORIGIN_HEADER: "CustomHarness"}
+
+        kwargs = apply_provider_profile(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            {"default_headers": custom_headers},
+        )
+
+        assert kwargs["default_headers"] is custom_headers
+
     def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
@@ -1679,14 +2002,6 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="non-empty"):
             register_harness_profile("", HarnessProfile())
 
-    def test_multiple_colons_rejected_provider(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_provider_profile("a:b:c", ProviderProfile())
-
-    def test_multiple_colons_rejected_harness(self) -> None:
-        with pytest.raises(ValueError, match="more than one"):
-            register_harness_profile("a:b:c", HarnessProfile())
-
     def test_empty_provider_half_rejected(self) -> None:
         with pytest.raises(ValueError, match="empty provider"):
             register_provider_profile(":model", ProviderProfile())
@@ -1732,6 +2047,25 @@ class TestRegisterProfileKeyValidation:
         """
         with pytest.raises(ValueError, match="whitespace"):
             register_harness_profile(key, HarnessProfile())
+
+    @pytest.mark.parametrize("key", ["::", ":::", ":model", "openai:"])
+    def test_empty_provider_or_model_rejected(self, key: str) -> None:
+        """Both registries require a provider and a complete model identifier."""
+        with pytest.raises(ValueError, match="empty provider"):
+            register_provider_profile(key, ProviderProfile())
+        with pytest.raises(ValueError, match="empty provider"):
+            register_harness_profile(key, HarnessProfile())
+
+    @pytest.mark.parametrize("key", ["a:b:", "a::", "a:::", "a::b", "a:b :c", "a:b: c", "a:b\t:c"])
+    def test_model_remainder_preserved(self, key: str) -> None:
+        """Provider-specific model syntax survives registration and exact lookup."""
+        with patch.dict(_PROVIDER_PROFILES), patch.dict(_HARNESS_PROFILES):
+            provider_profile = ProviderProfile()
+            harness_profile = HarnessProfile()
+            register_provider_profile(key, provider_profile)
+            register_harness_profile(key, harness_profile)
+            assert get_provider_profile(key) is provider_profile
+            assert _get_harness_profile(key) is harness_profile
 
     def test_valid_provider_key_accepted(self) -> None:
         original = dict(_PROVIDER_PROFILES)
@@ -1904,9 +2238,6 @@ class TestProfileLookupKeyValidation:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_harness_lookup_rejects_double_colon(self) -> None:
-        assert _get_harness_profile("a:b:c") is None
-
     def test_harness_lookup_rejects_empty_string(self) -> None:
         assert _get_harness_profile("") is None
 
@@ -1927,9 +2258,6 @@ class TestProfileLookupKeyValidation:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
-
-    def test_provider_lookup_rejects_double_colon(self) -> None:
-        assert get_provider_profile("a:b:c") is None
 
 
 class TestOpenRouterEmptyEnvVar:

@@ -8,7 +8,7 @@
 #
 # Examples:
 #     feat(sdk): add multi‐agent support
-#     fix(cli): resolve flag parsing error
+#     fix(sdk): resolve flag parsing error
 #     docs(sdk): update API usage examples
 #
 # Allowed Types:
@@ -27,10 +27,10 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, code, daytona, deepagents, deepagents-acp, deepagents-cli,
-#   deepagents-code, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
-#   langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox, modal,
-#   quickjs, repl, runloop, sdk
+#   acp, ci, code, daytona, dcode-gha, deepagents, deepagents-acp,
+#   deepagents-code, deepagents-talon, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
+#   langchain-quickjs, langchain-runloop, langchain-vercel-sandbox, langsmith-sandbox, modal,
+#   quickjs, repo, runloop, sdk, talon, vercel
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -53,7 +53,7 @@ on:
   pull_request:
     # `labeled`/`unlabeled` are required so the bypass-label warning comment
     # appears (or gets cleaned up) the moment a maintainer toggles
-    # `ignore-lint-pr-title`. Without them, the warning would only update on
+    # `ci:skip-title-lint`. Without them, the warning would only update on
     # the next title edit or push.
     types: [ opened, edited, synchronize, labeled, unlabeled ]
 
@@ -63,13 +63,28 @@ jobs:
     name: "validate format"
     runs-on: ubuntu-latest
     steps:
+      - name: "🚫 Reject leading/trailing whitespace"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The semantic-pull-request action reports a confusing "No release
+          # type found" error when the title is otherwise valid but has
+          # surrounding whitespace (e.g., " feat(sdk): ..."). Catch that here
+          # with a clearer message before delegating to the action.
+          trimmed="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+          if [[ "$PR_TITLE" != "$trimmed" ]]; then
+            echo "::error::PR title has leading or trailing whitespace: '$PR_TITLE'"
+            echo "Edit the PR title to remove surrounding whitespace. Suggested title: '$trimmed'"
+            exit 1
+          fi
       - name: "🚫 Reject empty scope"
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           if [[ "$PR_TITLE" =~ ^[a-z]+\(\)[!]?: ]]; then
             echo "::error::PR title has empty scope parentheses: '$PR_TITLE'"
-            echo "Either remove the parentheses or provide a scope (e.g., 'fix(cli): ...')."
+            echo "Either remove the parentheses or provide a scope (e.g., 'fix(sdk): ...')."
             exit 1
           fi
       - name: "✅ Validate Conventional Commits Format"
@@ -94,14 +109,13 @@ jobs:
           scopes: |
             acp
             ci
-            cli
-            cli-gha
             code
+            dcode-gha
             daytona
             deepagents
             deepagents-acp
-            deepagents-cli
             deepagents-code
+            deepagents-talon
             deps
             deps-dev
             evals
@@ -111,22 +125,24 @@ jobs:
             langchain-daytona
             langchain-modal
             langchain-quickjs
-            langchain-repl
             langchain-runloop
+            langchain-vercel-sandbox
             langsmith-sandbox
             modal
             quickjs
-            repl
+            repo
             runloop
             sdk
+            talon
+            vercel
           requireScope: true
           disallowScopes: |
             release
             [A-Z]+
           ignoreLabels: |
-            ignore-lint-pr-title
+            ci:skip-title-lint
 
-  # When a maintainer applies the `ignore-lint-pr-title` label to bypass the
+  # When a maintainer applies the `ci:skip-title-lint` label to bypass the
   # Conventional Commits check, post a sticky comment so the bypass is visible
   # to reviewers and to release-please consumers (a non-conventional title
   # typically means no changelog entry on merge, unless a
@@ -151,9 +167,9 @@ jobs:
     # path — without it, removing the label would leave the warning comment
     # behind until the next title edit or push.
     if: >-
-      (github.event.action == 'labeled' && github.event.label.name == 'ignore-lint-pr-title') ||
-      (github.event.action == 'unlabeled' && github.event.label.name == 'ignore-lint-pr-title') ||
-      contains(github.event.pull_request.labels.*.name, 'ignore-lint-pr-title')
+      (github.event.action == 'labeled' && github.event.label.name == 'ci:skip-title-lint') ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'ci:skip-title-lint') ||
+      contains(github.event.pull_request.labels.*.name, 'ci:skip-title-lint')
     steps:
       - name: "post or remove bypass-warning comment"
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -170,7 +186,7 @@ jobs:
               return;
             }
             const STICKY_MARKER = '<!-- pr-title-lint-bypass -->';
-            const BYPASS_LABEL = 'ignore-lint-pr-title';
+            const BYPASS_LABEL = 'ci:skip-title-lint';
 
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {

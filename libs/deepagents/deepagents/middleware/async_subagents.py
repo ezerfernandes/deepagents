@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
@@ -32,17 +32,26 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncSubAgent(TypedDict):
-    """Specification for an async subagent running on a remote Agent Protocol server.
+    """Specification for an async subagent running on a remote [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
 
     Async subagents connect to any Agent Protocol-compliant server via the
     LangGraph SDK. They run as background tasks that the main agent can
     monitor and update.
 
-    Compatible with LangGraph Platform (managed) and self-hosted servers.
-    Authentication for LangGraph Platform is handled automatically by the SDK
-    via environment variables (`LANGGRAPH_API_KEY`, `LANGSMITH_API_KEY`, or
-    `LANGCHAIN_API_KEY`). For self-hosted servers, pass custom auth via
-    `headers`.
+    Compatible with LangGraph Platform / LangSmith Deployment (managed) and
+    self-hosted servers.
+
+    Authentication for LangGraph Platform / LangSmith Deployment is handled
+    automatically by the SDK via environment variables (`LANGGRAPH_API_KEY`,
+    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`). For self-hosted servers,
+    pass custom auth via `headers`.
+
+    !!! note "Async invocation required for local ASGI transport"
+
+        Omitting `url` uses in-process ASGI transport for a local server. This
+        transport is available only through an async parent-agent entrypoint,
+        such as `ainvoke`. The synchronous `invoke` path requires a URL for a
+        reachable Agent Protocol server.
     """
 
     name: str
@@ -58,7 +67,7 @@ class AsyncSubAgent(TypedDict):
     """The graph name or assistant ID on the remote server."""
 
     url: NotRequired[str]
-    """URL of the Agent Protocol server.
+    """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
 
     Defaults to the LangGraph SDK's default endpoint. Omit to use ASGI
     transport for local servers.
@@ -172,43 +181,6 @@ Available async agent types:
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote server, so it has its own tools and capabilities."""  # noqa: E501
-
-ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
-
-You have access to async subagent tools that launch background tasks on remote LangGraph servers.
-
-### Tools:
-- `start_async_task`: Start a new background task. Returns a task ID immediately.
-- `check_async_task`: Get current status and result of a task. Returns status + result (if complete).
-- `update_async_task`: Send new instructions to a running task. Returns confirmation + updated status.
-- `cancel_async_task`: Stop a running task. Returns confirmation.
-- `list_async_tasks`: List all tracked tasks with live statuses. Returns summary of all tasks.
-
-### Workflow:
-1. **Start** — Use `start_async_task` to start a task. Report the task ID to the user and stop.
-   Do NOT immediately check the status — the task runs in the background while you and the user continue other work.
-2. **Check (on request)** — Only use `check_async_task` when the user explicitly asks for a status update or
-   result. If the status is "running", report that and stop — do not poll in a loop.
-3. **Update** (optional) — Use `update_async_task` to send new instructions to a running task. This interrupts
-   the current run and starts a fresh one on the same thread. The task_id stays the same.
-4. **Cancel** (optional) — Use `cancel_async_task` to stop a task that is no longer needed.
-5. **Collect** — When `check_async_task` returns status "success", the result is included in the response.
-6. **List** — Use `list_async_tasks` to see live statuses for all tasks at once, or to recall task IDs after context compaction.
-
-### Critical rules:
-- After launching, ALWAYS return control to the user immediately. Never auto-check after launching.
-- Never poll `check_async_task` in a loop. Check once per user request, then stop.
-- If a check returns "running", tell the user and wait for them to ask again.
-- Task statuses in conversation history are ALWAYS stale — a task that was "running" may now be done.
-  NEVER report a status from a previous tool result. ALWAYS call a tool to get the current status:
-  use `list_async_tasks` when the user asks about multiple tasks or "all tasks",
-  use `check_async_task` when the user asks about a specific task.
-- Always show the full task_id — never truncate or abbreviate it.
-
-### When to use async subagents:
-- Long-running tasks that would block the main agent
-- Tasks that benefit from running on specialized remote deployments
-- When you want to run multiple tasks concurrently and collect results later"""
 
 
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
@@ -445,10 +417,10 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         if isinstance(task, str):
             return task
 
-        client = clients.get_sync(task["agent_name"])
         try:
+            client = clients.get_sync(task["agent_name"])
             run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -491,7 +463,11 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         name="check_async_task",
         func=check_async_task,
         coroutine=acheck_async_task,
-        description="Check the status of an async subagent task. Returns the current status and, if complete, the result.",
+        description=(
+            "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
+            "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
+            "rather than reporting a status from a previous tool result."
+        ),
         infer_schema=False,
         args_schema=CheckAsyncTaskSchema,
     )
@@ -614,10 +590,10 @@ def _build_cancel_tool(
         if isinstance(tracked, str):
             return tracked
 
-        client = clients.get_sync(tracked["agent_name"])
         try:
+            client = clients.get_sync(tracked["agent_name"])
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncTask(
@@ -827,7 +803,9 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "List tracked async subagent tasks with their current live statuses. "
             "By default shows all tasks. Use `status_filter` to narrow by status "
             "(e.g. 'running', 'success', 'error', 'cancelled'). "
-            "Use `check_async_task` to get the full result of a specific completed task."
+            "Use `check_async_task` to get the full result of a specific completed task. "
+            "Statuses shown earlier in the conversation are always stale, so call this to read current "
+            "statuses rather than reporting one from a previous tool result."
         ),
         infer_schema=False,
         args_schema=ListAsyncTasksSchema,
@@ -843,7 +821,7 @@ def _build_async_subagent_tools(
         agents: List of async subagent specifications.
 
     Returns:
-        List of StructuredTools for launch, check, update, cancel, and list operations.
+        List of `StructuredTools` for launch, check, update, cancel, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)
@@ -899,13 +877,16 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = AsyncSubAgentState
 
     def __init__(
         self,
         *,
         async_subagents: list[AsyncSubAgent],
-        system_prompt: str | None = ASYNC_TASK_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()
@@ -923,7 +904,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
-            self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n" + agents_desc
+            self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
 

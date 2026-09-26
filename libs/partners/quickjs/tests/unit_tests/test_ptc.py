@@ -1,12 +1,13 @@
 """Tests for programmatic tool calling (PTC).
 
-PTC exposes agent tools as ``tools.<camelCase>`` async functions inside
-the REPL so one ``eval`` can orchestrate many tool invocations.
+PTC exposes agent tools as `tools.<camelCase>` async functions inside
+the REPL so one `eval` can orchestrate many tool invocations.
 """
 
 from __future__ import annotations
 
 import json
+from typing import Any, Literal
 
 import pytest
 from langchain_core.messages import ToolMessage
@@ -14,8 +15,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
+from typing_extensions import TypedDict
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -33,11 +35,25 @@ class _GreetInput(BaseModel):
     times: int = Field(default=1, description="Repeat count")
 
 
+class _Status(BaseModel):
+    """Module-scope BaseModel used as a return annotation in PTC tests."""
+
+    status: str
+    count: int
+
+
+class _UserLookup(TypedDict):
+    """Module-scope TypedDict used as a return annotation in PTC tests."""
+
+    id: int
+    name: str
+
+
 def _greet_tool(record: list[dict] | None = None) -> BaseTool:
     """A synchronous tool that records its invocations.
 
-    Async-capable by default because ``StructuredTool.from_function``
-    synthesises a coroutine wrapper when only ``func=`` is passed.
+    Async-capable by default because `StructuredTool.from_function`
+    synthesises a coroutine wrapper when only `func=` is passed.
     """
     calls = record if record is not None else []
 
@@ -71,7 +87,7 @@ def _echo_tool(name: str = "echo") -> BaseTool:
 
 
 def _command_tool(name: str = "emit_command") -> BaseTool:
-    """A tool that returns a LangGraph ``Command`` update."""
+    """A tool that returns a LangGraph `Command` update."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -99,7 +115,7 @@ def _command_tool(name: str = "emit_command") -> BaseTool:
 
 
 def _tool_message_list_tool(name: str = "emit_messages") -> BaseTool:
-    """A tool that returns a list of ``ToolMessage`` values."""
+    """A tool that returns a list of `ToolMessage` values."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -127,7 +143,7 @@ def _tool_message_list_tool(name: str = "emit_messages") -> BaseTool:
 
 
 def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
-    """A tool that returns a mixed list of ``Command`` and ``ToolMessage``."""
+    """A tool that returns a mixed list of `Command` and `ToolMessage`."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -236,6 +252,28 @@ def test_filter_list_include() -> None:
     assert [t.name for t in out] == ["a", "c"]
 
 
+def test_filter_rejects_task_by_name() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([task], ["task"], self_tool_name="eval")
+
+
+def test_filter_rejects_task_by_instance() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([], [task], self_tool_name="eval")
+
+
+def test_filter_allows_non_task_tools() -> None:
+    # Sanity: the reservation is specific to the name "task".
+    out = filter_tools_for_ptc(
+        [_echo_tool("tasks"), _echo_tool("subtask")],
+        ["tasks", "subtask"],
+        self_tool_name="eval",
+    )
+    assert [t.name for t in out] == ["tasks", "subtask"]
+
+
 def test_filter_list_of_tools_uses_them_directly() -> None:
     """`list[BaseTool]` ignores agent tools and uses the supplied list."""
     greet = _greet_tool()
@@ -298,7 +336,7 @@ def test_render_ptc_prompt_uses_signatures() -> None:
     prompt = render_ptc_prompt([_greet_tool()])
     assert "`tools` namespace" in prompt
     assert "globalThis.tools" in prompt
-    assert "async function greet(input:" in prompt
+    assert "tools.greet(input:" in prompt
     # Fields come through
     assert "name: string" in prompt
     assert "times?: number" in prompt
@@ -326,8 +364,40 @@ async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
     assert calls == [{"name": "world", "times": 2}]
 
 
+async def test_undefined_object_property_uses_schema_default(
+    repl: _ThreadREPL,
+) -> None:
+    """A property passed as JS ``undefined`` is omitted so defaults apply."""
+
+    class _In(BaseModel):
+        name: str = Field(default="", description="Optional name")
+
+    def _fn(name: str = "") -> str:
+        return f"ok:{name!r}"
+
+    tool = StructuredTool.from_function(
+        name="myTool",
+        description="Echo the name with its repr.",
+        func=_fn,
+        args_schema=_In,
+    )
+    repl.install_tools([tool])
+
+    empty = await repl.eval_async("await tools.myTool({})")
+    assert empty.error_type is None, empty.error_message
+    assert empty.result == "ok:''"
+
+    explicit = await repl.eval_async('await tools.myTool({ name: "" })')
+    assert explicit.error_type is None, explicit.error_message
+    assert explicit.result == "ok:''"
+
+    undefined = await repl.eval_async("await tools.myTool({ name: undefined })")
+    assert undefined.error_type is None, undefined.error_message
+    assert undefined.result == "ok:''"
+
+
 async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
-    """``Promise.all`` on two tool calls resolves both before returning."""
+    """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []
     repl.install_tools([_greet_tool(calls)])
     outcome = await repl.eval_async(
@@ -446,7 +516,7 @@ async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
 
 
 async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
-    """Dropping a tool removes it from ``globalThis.tools`` on next install."""
+    """Dropping a tool removes it from `globalThis.tools` on next install."""
     repl.install_tools([_greet_tool(), _echo_tool("echo")])
     repl.install_tools([_greet_tool()])
     outcome = await repl.eval_async("typeof tools.echo")
@@ -550,7 +620,7 @@ async def test_ptc_host_call_budget_none_disables_limit(
 
 
 def test_middleware_ptc_default_off_omits_prompt_block() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # Calling _prepare_for_call directly is fine — pass a minimal request
     # stand-in. We don't need a full ModelRequest for this check.
     from types import SimpleNamespace
@@ -563,11 +633,12 @@ def test_middleware_ptc_default_off_omits_prompt_block() -> None:
 def test_middleware_ptc_list_includes_prompt_block() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=["greet", "eval"])
-    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
+    mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
+    state = {"_quickjs_slot_id": "ptc-prompt"}
+    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     prompt = mw._prepare_for_call(req)
     # Greet included
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
     # The REPL's own tool never appears
     assert "tools.eval(" not in prompt
 
@@ -576,29 +647,34 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     """`ptc=[tool]` installs the tool in the REPL even when the agent has none."""
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=[_greet_tool()])
-    req = SimpleNamespace(tools=[])
+    mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
+    state = {"_quickjs_slot_id": "ptc-tool-only"}
+    req = SimpleNamespace(tools=[], state=state)
     prompt = mw._prepare_for_call(req)
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
+
+
+def test_middleware_ptc_requires_private_slot_state() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    with pytest.raises(ValueError, match="_quickjs_slot_id"):
+        mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     """PTC install and the eval tool must see the same REPL instance.
 
-    Regression: without a stable fallback thread id, each call to
-    ``_resolve_thread_id`` minted a fresh UUID, so ``wrap_model_call``
-    installed tools on one REPL and the eval ran on another — JS saw
-    ``ReferenceError: tools is not defined``.
+    Regression: PTC installation must use the private slot id that the eval
+    tool reads from runtime state, not a shared middleware fallback.
     """
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=["greet", "eval"])
-    # Simulate a model-call turn without any langgraph config present.
-    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
+    mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
+    state = {"_quickjs_slot_id": "ptc-shared-slot"}
+    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     mw._prepare_for_call(req)
-    # Now invoke the eval tool directly via the middleware-owned registry.
-    # The resolver should return the *same* REPL instance.
-    first = mw._registry.get(mw._fallback_thread_id)
+    first = mw._registry.get(state["_quickjs_slot_id"])
     outcome = await first.eval_async("typeof tools.greet")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "function"
@@ -610,11 +686,12 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     from langchain.tools import ToolRuntime
 
     command_tool = _command_tool()
-    mw = REPLMiddleware(ptc=[command_tool])
+    mw = CodeInterpreterMiddleware(ptc=[command_tool])
     tool = mw.tools[0]
-    mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool]))
+    state = {"_quickjs_slot_id": "ptc-command-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool], state=state))
     runtime = ToolRuntime(
-        state={},
+        state=state,
         context={},
         config={},
         stream_writer=lambda _chunk: None,
@@ -632,13 +709,46 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     assert "<result>value=5</result>" in result.content
 
 
+async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:
+    from types import SimpleNamespace
+
+    from langchain.tools import ToolRuntime
+
+    greet_tool = _greet_tool()
+    mw = CodeInterpreterMiddleware(ptc=[greet_tool], mode="call")
+    tool = mw.tools[0]
+    state = {"_quickjs_slot_id": "ptc-call-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[greet_tool, tool], state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _chunk: None,
+        tools=[tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+    assert tool.coroutine is not None
+
+    first = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.greet({name: 'Ada'})",
+    )
+    second = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.greet({name: 'Bob'})",
+    )
+    assert "<result>hi Ada x1</result>" in first.content
+    assert "<result>hi Bob x1</result>" in second.content
+
+
 def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=True)  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc=True)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
-    mw = REPLMiddleware(ptc=False)  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc=False)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
 
@@ -646,6 +756,150 @@ def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
 def test_middleware_rejects_dict_ptc_config_during_prepare() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
+
+
+# ---------------------------------------------------------------------------
+# Return-type rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_ptc_prompt_renders_concrete_primitive_return_types() -> None:
+    """`render_ptc_prompt` renders Promise<T> from primitive annotations."""
+
+    def get_service_id() -> int:
+        """Return a service id."""
+        return 1
+
+    def get_service_name() -> str:
+        """Return a service name."""
+        return "svc"
+
+    async def list_ids() -> list[int]:
+        """List ids."""
+        return [1, 2, 3]
+
+    tools = [
+        StructuredTool.from_function(
+            name="get_service_id",
+            description="Return a service id.",
+            func=get_service_id,
+        ),
+        StructuredTool.from_function(
+            name="get_service_name",
+            description="Return a service name.",
+            func=get_service_name,
+        ),
+        StructuredTool.from_function(
+            name="list_ids",
+            description="List ids.",
+            coroutine=list_ids,
+        ),
+    ]
+    prompt = render_ptc_prompt(tools)
+    assert "Promise<integer>" in prompt or "Promise<number>" in prompt
+    assert "Promise<string>" in prompt
+    assert "Promise<integer[]>" in prompt or "Promise<number[]>" in prompt
+
+
+def test_render_ptc_prompt_falls_back_to_unknown_for_unannotated_returns() -> None:
+    """Tools without a return annotation render as `Promise<unknown>`."""
+
+    def no_annotation():
+        """Return something."""
+        return 1
+
+    tool = StructuredTool.from_function(
+        name="no_annotation",
+        description="Return something.",
+        func=no_annotation,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert "Promise<unknown>" in prompt
+
+
+def _stub() -> None:
+    """Stub function used as a tool callable in parametrized return-type tests."""
+    return
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        # Primitives.
+        (int, "Promise<number>"),
+        (float, "Promise<number>"),
+        (str, "Promise<string>"),
+        (bool, "Promise<boolean>"),
+        (type(None), "Promise<null>"),
+        # Containers of primitives.
+        (list[int], "Promise<number[]>"),
+        # `dict[str, V]` uses `additionalProperties` in the schema, which
+        # `_json_schema_to_ts` doesn't currently read — value type collapses
+        # to `unknown`.
+        (dict[str, int], "Promise<Record<string, unknown>>"),
+        # Optional / Literal / unions all flow through `anyOf` or `enum`.
+        (int | None, "Promise<number | null>"),
+        (Literal["active", "resolved"], 'Promise<"active" | "resolved">'),
+        (int | str, "Promise<number | string>"),
+        # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
+        (_UserLookup, "Promise<{ id: number; name: string }>"),
+        (_Status, "Promise<{ status: string; count: number }>"),
+        # Compound types that hit `$ref` (collections of TypedDict /
+        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
+        (list[_UserLookup], "Promise<unknown[]>"),
+        (list[_Status], "Promise<unknown[]>"),
+    ],
+)
+def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
+    """Return-type rendering covers each supported annotation shape."""
+
+    # Build a fresh callable so the parametrized annotation is bound at runtime
+    # rather than at import (`from __future__ import annotations` would
+    # otherwise leave the annotation as a string).
+    def _fn() -> None:
+        """Tool stub."""
+        return
+
+    _fn.__annotations__["return"] = annotation
+    tool = StructuredTool.from_function(
+        name="t",
+        description="Stub tool.",
+        func=_fn,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert expected in prompt, prompt
+
+
+def _get_status_record() -> _Status:
+    """Module-level helper.
+
+    Defined at module scope so `get_type_hints` can resolve the return
+    annotation under `from __future__ import annotations`.
+    """
+    return _Status(status="ok", count=3)
+
+
+async def test_pydantic_return_arrives_as_object_matching_schema(
+    repl: _ThreadREPL,
+) -> None:
+    """BaseModel returns are dumped at the bridge so the JS shape matches the schema."""
+    tool = StructuredTool.from_function(
+        name="get_status",
+        description="Return a status record.",
+        func=_get_status_record,
+    )
+    # The prompt advertises a structured object (Pydantic JSON Schema inlined).
+    prompt = render_ptc_prompt([tool])
+    assert "status: string" in prompt
+    assert "count: number" in prompt
+
+    # And the bridge delivers an object with those fields, not a string.
+    repl.install_tools([tool])
+    outcome = await repl.eval_async(
+        "const r = await tools.getStatus({});\n`${typeof r}:${r.status}:${r.count}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "object:ok:3"

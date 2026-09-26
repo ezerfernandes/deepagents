@@ -5,24 +5,24 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
 import logging
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
-
-if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -38,12 +38,13 @@ from deepagents.middleware.skills import (
     MAX_SKILLS_LOAD_WARNINGS,
     SkillMetadata,
     SkillsMiddleware,
+    SkillsState,
+    SkillsStateUpdate,
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
-    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -59,7 +60,7 @@ def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
 
 @contextmanager
 def _runtime_context(assistant_id: str | None = None):
-    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    """Set a LangGraph Runtime in the current context so `get_runtime()` resolves."""
     server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
     runtime = Runtime(server_info=server_info)
     token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
@@ -217,103 +218,6 @@ No YAML frontmatter here.
     assert result is None
 
 
-def test_validate_module_path_absent() -> None:
-    """Missing key returns None — the vast majority of skills have no module."""
-    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_valid_bare() -> None:
-    """A bare filename with a supported extension passes through unchanged."""
-    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_strips_dot_slash() -> None:
-    """./index.ts → index.ts so the stored path matches how the loader keys files."""
-    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_nested() -> None:
-    """Subdirectory paths are fine as long as they stay inside the skill dir."""
-    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
-
-
-def test_validate_module_path_all_supported_extensions() -> None:
-    """Every quickjs-rs-accepted extension is accepted here too."""
-    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
-        path = f"index.{ext}"
-        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
-
-
-def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
-    """Non-string values log a warning and return None — don't crash the parse."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
-    assert "non-string 'module'" in caplog.text
-
-
-def test_validate_module_path_rejects_empty_string() -> None:
-    """An empty / whitespace-only value is equivalent to absent."""
-    assert _validate_module_path("", "/skills/x/SKILL.md") is None
-    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
-    """Absolute paths could reach outside the skill dir — reject with a warning."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
-    assert "absolute" in caplog.text
-
-
-def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
-    """Any form of `..` traversal is rejected so skills can't read each other's code."""
-    caplog.set_level(logging.WARNING)
-    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
-        caplog.clear()
-        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
-        assert "escapes" in caplog.text
-
-
-def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
-    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
-    assert "extension" in caplog.text
-
-
-def test_parse_skill_metadata_with_module() -> None:
-    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
-    content = """---
-name: pdf-extract
-description: Parse PDFs
-module: ./index.ts
----
-
-# PDF extract
-"""
-    result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
-    assert result is not None
-    assert result["module"] == "index.ts"
-
-
-def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
-    """An invalid `module` value must not drop the skill.
-
-    The prose is still useful; we just drop the module surface.
-    """
-    content = """---
-name: bad-module
-description: has a bad module path
-module: /etc/passwd
----
-
-# Bad module
-"""
-    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
-    assert result is not None
-    assert "module" not in result
-    assert result["name"] == "bad-module"
-
-
 def test_parse_skill_metadata_invalid_yaml() -> None:
     """Test _parse_skill_metadata with invalid YAML."""
     content = """---
@@ -351,8 +255,8 @@ Content
     assert result is None
 
 
-def test_parse_skill_metadata_description_truncation() -> None:
-    """Test _parse_skill_metadata truncates long descriptions."""
+def test_parse_skill_metadata_description_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """Test _parse_skill_metadata truncates long descriptions with an actionable warning."""
     long_description = "A" * (MAX_SKILL_DESCRIPTION_LENGTH + 100)
     content = f"""---
 name: test-skill
@@ -362,9 +266,15 @@ description: {long_description}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert len(result["description"]) == MAX_SKILL_DESCRIPTION_LENGTH
+    message = caplog.text
+    assert "/skills/test/SKILL.md" in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH + 100) in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH) in message
+    assert "'description'" in message
 
 
 def test_parse_skill_metadata_too_large() -> None:
@@ -399,7 +309,7 @@ Content
     assert result["compatibility"] is None  # Empty string should become None
 
 
-def test_parse_skill_metadata_compatibility_max_length() -> None:
+def test_parse_skill_metadata_compatibility_max_length(caplog: pytest.LogCaptureFixture) -> None:
     """Test _parse_skill_metadata truncates compatibility exceeding 500 chars.
 
     Per Agent Skills spec, compatibility field must be max 500 characters.
@@ -414,10 +324,16 @@ compatibility: {long_compat}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert result["compatibility"] is not None
     assert len(result["compatibility"]) == MAX_SKILL_COMPATIBILITY_LENGTH
+    message = caplog.text
+    assert "/skills/test-skill/SKILL.md" in message
+    assert "600" in message
+    assert str(MAX_SKILL_COMPATIBILITY_LENGTH) in message
+    assert "'compatibility'" in message
 
 
 def test_parse_skill_metadata_whitespace_only_description() -> None:
@@ -565,7 +481,8 @@ def test_validate_metadata_valid_dict_passthrough() -> None:
     assert result == {"author": "acme"}
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list() -> None:
+    """Test _parse_skill_metadata accepts a YAML list of tool names."""
     content = """---
 name: test-skill
 description: A test skill
@@ -580,10 +497,11 @@ Content
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
-    assert result["allowed_tools"] == []
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_skipped() -> None:
+    """Test _parse_skill_metadata skips non-string and blank YAML list items."""
     content = """---
 name: test-skill
 description: A test skill
@@ -594,6 +512,72 @@ allowed-tools:
   -
   - "  "
   - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_trims_items() -> None:
+    """Test _parse_skill_metadata strips surrounding whitespace from kept items."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - "  Read  "
+  - "Write"
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_empty_list() -> None:
+    """Test _parse_skill_metadata handles an empty YAML list."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: []
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == []
+
+
+def test_parse_skill_metadata_allowed_tools_comma_separated_string() -> None:
+    """Test _parse_skill_metadata splits a comma-separated string of tool names."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: Bash,Read,Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_scalar_ignored() -> None:
+    """Test _parse_skill_metadata ignores a non-string, non-list scalar value."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: 42
 ---
 
 Content
@@ -1006,7 +990,7 @@ def test_format_skills_locations_builtin_leaf() -> None:
     """`built_in_skills` collapses to `Built-in Skills` rather than the raw leaf."""
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore[arg-type]
-        sources=["/pkg/deepagents_cli/built_in_skills"],
+        sources=["/pkg/deepagents_code/built_in_skills"],
     )
 
     result = middleware._format_skills_locations()
@@ -1632,15 +1616,6 @@ def test_skills_middleware_with_state_backend() -> None:
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 
-    runtime = SimpleNamespace(
-        context=None,
-        store=None,
-        stream_writer=lambda _: None,
-    )
-
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
-    assert isinstance(backend, StateBackend)
-
 
 def test_skills_middleware_with_store_backend_instance() -> None:
     """Test that SkillsMiddleware can be initialized with StoreBackend instance."""
@@ -1697,8 +1672,8 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
-    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+    # Verify skills_metadata is NOT in final state (it's `OmitFromOutput`)
+    assert "skills_metadata" not in result, "skills_metadata should be omitted from invoke() output"
 
     # Inspect the call history to verify system prompt was injected
     assert len(fake_model.call_history) > 0, "Model should have been called at least once"
@@ -1768,8 +1743,8 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
-    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+    # Verify skills_metadata is NOT in final state (it's `OmitFromOutput`)
+    assert "skills_metadata" not in result, "skills_metadata should be omitted from invoke() output"
 
     # Inspect the call history to verify system prompt was injected with USER version
     assert len(fake_model.call_history) > 0, "Model should have been called at least once"
@@ -1840,6 +1815,33 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     assert result["skills_metadata"][0]["name"] == "test-skill"
 
 
+def test_before_agent_reloads_when_metadata_is_none(tmp_path: Path) -> None:
+    """A stored `None` means skills are not loaded, so `before_agent` loads them."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    backend.upload_files([(skill_path, make_skill_content("test-skill", "A test skill").encode("utf-8"))])
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    result = middleware.before_agent({"skills_metadata": None}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["test-skill"]
+
+
+def test_before_agent_clears_load_errors_when_sources_load_cleanly(tmp_path: Path) -> None:
+    """Every load rewrites `skills_load_errors`, so warnings from an earlier load are cleared."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skills_dir.mkdir(parents=True)
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+
+    state = {"skills_metadata": None, "skills_load_errors": ["Cannot load skills from '/old': denied"]}
+    result = middleware.before_agent(state, None, {})  # type: ignore[arg-type]
+
+    assert result == {"skills_metadata": [], "skills_load_errors": []}
+
+
 def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) -> None:
     """Test end-to-end: create_deep_agent with skills parameter and FilesystemBackend."""
     # Create skill on filesystem
@@ -1863,6 +1865,235 @@ def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) ->
     # Verify invocation succeeded
     assert "messages" in result
     assert len(result["messages"]) > 0
+
+
+def test_forked_subagent_replays_skills_injected_system_prompt(tmp_path: Path) -> None:
+    """Test that a fork replays the parent's skills-injected system message verbatim."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for deep agents")
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    parent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "continue", "subagent_type": "worker"},
+                            "id": "call_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="parent done"),
+            ]
+        )
+    )
+    worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+
+    agent = create_deep_agent(
+        model=parent_model,
+        backend=backend,
+        skills=[str(skills_dir)],
+        subagents=[
+            {
+                "name": "worker",
+                "description": "Continues with the parent's context.",
+                "model": worker_model,
+                "mode": "fork",
+            }
+        ],
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="delegate this")]})
+
+    parent_system_message = parent_model.call_history[0]["messages"][0]
+    worker_system_message = worker_model.call_history[0]["messages"][0]
+
+    assert isinstance(parent_system_message, SystemMessage)
+    assert "test-skill" in parent_system_message.text
+    assert worker_system_message == parent_system_message
+    assert parent_system_message.text.count("## Skills System") == 1
+
+
+def _last_system_prompt(model: GenericFakeChatModel) -> str:
+    """Return the system prompt the fake model received on its most recent call."""
+    return model.call_history[-1]["messages"][0].text
+
+
+def test_update_state_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
+    """Setting `skills_metadata` to `None` between runs makes the next run see the current skills."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 3))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "reset"}}
+
+    agent.invoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+
+    shutil.rmtree(skills_dir / "old-skill")
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    agent.invoke({"messages": [HumanMessage(content="turn 2")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+    assert "new-skill" not in _last_system_prompt(model)
+
+    agent.update_state(config, {"skills_metadata": None})
+    agent.invoke({"messages": [HumanMessage(content="turn 3")]}, config)
+
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+    assert "turn 1" in [message.text for message in model.call_history[-1]["messages"]]
+
+
+def test_invoke_reset_reloads_skills_on_next_run(tmp_path: Path) -> None:
+    """Passing `skills_metadata=None` as `invoke()` input reloads skills for that run."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 2))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "invoke-reset"}}
+
+    agent.invoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "old-skill" in _last_system_prompt(model)
+
+    shutil.rmtree(skills_dir / "old-skill")
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    result = agent.invoke({"messages": [HumanMessage(content="turn 2")], "skills_metadata": None}, config)
+
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+    assert "skills_metadata" not in result
+
+
+class _AddSkillThenInvalidate(AgentMiddleware[SkillsState, Any, Any]):
+    """Invalidator middleware: adds a skill and clears the cache after the first model call."""
+
+    state_schema = SkillsState
+
+    def __init__(self, backend: FilesystemBackend, skill_path: str) -> None:
+        super().__init__()
+        self._backend = backend
+        self._skill_path = skill_path
+        self.cleared = False
+
+    def after_model(self, state: SkillsState, runtime: Runtime) -> dict[str, Any] | None:
+        if self.cleared:
+            return None
+        self.cleared = True
+        self._backend.upload_files([(self._skill_path, make_skill_content("new-skill", "New skill").encode("utf-8"))])
+        return {"skills_metadata": None}
+
+
+@tool
+def _touch() -> str:
+    """Do nothing; exists only so the model can take a second turn."""
+    return "ok"
+
+
+def _two_call_model() -> GenericFakeChatModel:
+    """Return a model that takes two turns, the first via a no-op tool call."""
+    return GenericFakeChatModel(
+        messages=iter(
+            [
+                # Any tool call will do; it exists only to earn a second model call.
+                AIMessage(content="", tool_calls=[{"name": "_touch", "args": {}, "id": "call_touch", "type": "tool_call"}]),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+
+
+def test_after_model_reset_is_not_served_within_a_run(tmp_path: Path) -> None:
+    """Skills load once per run, so a mid-run reset waits for the next run.
+
+    The remaining model calls of the run see an empty skills list rather than
+    the stale one: `modify_request` renders a pending `None` as no skills.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
+    middleware = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], tools=[_touch], middleware=[middleware])
+
+    agent.invoke({"messages": [HumanMessage(content="add a skill")]})
+
+    assert len(model.call_history) == 2
+    first_system_prompt = model.call_history[0]["messages"][0].text
+    assert "old-skill" in first_system_prompt
+    assert "new-skill" not in first_system_prompt
+    assert "new-skill" not in _last_system_prompt(model)
+    assert "old-skill" not in _last_system_prompt(model)
+
+
+class _ReloadingSkillsMiddleware(SkillsMiddleware):
+    """Skills middleware that also checks the cache before every model call.
+
+    Loading stays in `before_agent`, so a subclass wanting a reset served
+    sooner reloads from `before_model` as well. Both hooks share the base
+    implementation, which no-ops when `skills_metadata` already holds a list.
+    """
+
+    def before_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+        return super().before_agent(state, runtime, config)
+
+
+def test_subclass_reloading_in_before_model_serves_mid_run_reset(tmp_path: Path) -> None:
+    """A subclass that reloads in `before_model` picks up a reset within the run.
+
+    Passed through `middleware=` with no `skills=`, so the built-in middleware
+    is not also mounted.
+    """
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    backend.upload_files([(str(skills_dir / "old-skill" / "SKILL.md"), make_skill_content("old-skill", "Old skill").encode("utf-8"))])
+    model = _two_call_model()
+    skills = _ReloadingSkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    invalidator = _AddSkillThenInvalidate(backend, str(skills_dir / "new-skill" / "SKILL.md"))
+    agent = create_deep_agent(model=model, backend=backend, tools=[_touch], middleware=[skills, invalidator])
+
+    agent.invoke({"messages": [HumanMessage(content="add a skill")]})
+
+    assert len(model.call_history) == 2
+    first_system_prompt = model.call_history[0]["messages"][0].text
+    assert "old-skill" in first_system_prompt
+    assert "new-skill" not in first_system_prompt
+    # `old-skill` is still on disk, so the reload keeps listing it alongside the new one.
+    assert "new-skill" in _last_system_prompt(model)
+    assert "old-skill" in _last_system_prompt(model)
+
+
+def test_update_state_reset_clears_fixed_skill_load_warnings(tmp_path: Path) -> None:
+    """A reload after fixing a broken source removes its warnings from the prompt and state."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"  # missing until turn 2, so the source fails to load
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 3))
+    agent = create_deep_agent(model=model, backend=backend, skills=[str(skills_dir)], checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "reset-warnings"}}
+
+    agent.invoke({"messages": [HumanMessage(content="turn 1")]}, config)
+    assert "<skill_load_warnings>" in _last_system_prompt(model)
+
+    backend.upload_files([(str(skills_dir / "new-skill" / "SKILL.md"), make_skill_content("new-skill", "New skill").encode("utf-8"))])
+
+    agent.invoke({"messages": [HumanMessage(content="turn 2")]}, config)
+    assert "<skill_load_warnings>" in _last_system_prompt(model)
+
+    agent.update_state(config, {"skills_metadata": None})
+    agent.invoke({"messages": [HumanMessage(content="turn 3")]}, config)
+
+    assert "<skill_load_warnings>" not in _last_system_prompt(model)
+    assert "new-skill" in _last_system_prompt(model)
+    assert agent.get_state(config).values["skills_load_errors"] == []
 
 
 def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:
@@ -1932,8 +2163,11 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
+    # Use get_state() for `files`: DeltaChannel only writes a snapshot blob every
+    # 50 steps, so checkpoint["channel_values"] won't contain "files" on non-snapshot steps.
+    state_values = agent.get_state(config).values
+    assert "/skills/user/test-skill/SKILL.md" in state_values["files"]
     checkpoint = agent.checkpointer.get(config)
-    assert "/skills/user/test-skill/SKILL.md" in checkpoint["channel_values"]["files"]
     assert checkpoint["channel_values"]["skills_metadata"] == [
         {
             "allowed_tools": [],
@@ -2119,3 +2353,63 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+# --- system_prompt override / suppression --------------------------------
+
+
+def test_init_rejects_non_str_system_prompt() -> None:
+    """`system_prompt` must be str or None."""
+    with pytest.raises(TypeError, match="must be str or None"):
+        SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=0)  # type: ignore[arg-type]
+
+
+def test_init_rejects_template_missing_slot() -> None:
+    """Custom template missing any required slot fails fast at construction."""
+    with pytest.raises(ValueError, match="missing required format slot"):
+        SkillsMiddleware(
+            backend=StateBackend(),
+            sources=[],
+            # Missing `{skills_list}`.
+            system_prompt="{skills_locations} {skills_load_warnings}",
+        )
+
+
+def test_modify_request_returns_unchanged_when_system_prompt_none() -> None:
+    """`system_prompt=None` skips appending; system message identical to input."""
+    middleware = SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=None)
+    base = SystemMessage(content="base")
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=base,
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+
+    assert result is request
+    assert result.system_message is base
+
+
+def test_modify_request_uses_custom_template() -> None:
+    """Custom template flows through `modify_request` instead of the default constant."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="LOC:{skills_locations}|WARN:{skills_load_warnings}|LIST:{skills_list}",
+    )
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    appended = list(result.system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
+
+    assert "LOC:" in appended
+    assert "WARN:" in appended
+    assert "LIST:" in appended
+    assert "## Skills System" not in appended  # default template marker absent

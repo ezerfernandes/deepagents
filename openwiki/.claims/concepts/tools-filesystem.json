@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:4fb4d238085b3ad11f16fd8cdb78f0cf93df6c149063141990c485e2b6be0213",
+  "claims": [
+    {
+      "id": "claim_6c4b652136014ccdbf50d7e0fcb06b8f",
+      "statement": "`read_file` routes backend-declared base64 content to multimodal ToolMessage blocks rather than line-numbered text, choosing a block type from the extension when known and retaining the validated source path and MIME type in message metadata.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L2018-L2050",
+          "version": "repo-lines-v1:sha256:20d31ba0a40b720f1b29ad45b834fd03501fa9ed1580ef4606762c6062432900:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwMDUwOTJhMzQ4NzI2ZTJhMjk4MDJiNzVlMjEwMjNmNDM3MTFjMjYyYmIwNjMwMzM1NGE5NDVhNDhkYWRiY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlMjFmY2U0ZDY5MGFjZTM3OWQ4N2VlZmY3ZTFjMjMxODAyZTQ3ZTlkOTBmNGVhZDk1OTgzMzk0MmIxMTBkOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIxNGYzNGYwMGNjMjMxZDgxNmE0ZmEwMTljNTM2MGM4Y2Q4ZmIwOGY0ZDYxOWE1MmViNDQ0ZTVmN2RmN2E1ZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMGMyZGVmYzMxYjRhY2ZmMGJiZDIxN2Q3YmJjODE1YmJkYjE5MjIxNjFmZDQzOGVmMWJmNTM2MjI0YmJlYjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f40d15d7e8b14965bdd9c50f341304fc",
+      "statement": "UnsupportedContentMiddleware runs on each model request and replaces only multimodal blocks the active model explicitly cannot accept with a read-file-path placeholder, without mutating persisted messages; `create_deep_agent` installs it at the tail of the middleware stack.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L918-L941",
+          "version": "repo-lines-v1:sha256:c0d7dcd1c3db040ea905737b93b9b92743cfa3ba5ea41436e6b0f2b0b57a45a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MmQyMmZiOWVhYTNmYjQ0MTJmYzBlNTQ3OGI4ZWIxYzUxZjllZDkzZjJlOTI0YzhhOTQ3OTJkZDQ4MmMwMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiZjBjYWEzNDVjMmUxMjA4ZDA5OTFjZDkwMDRiODUzNzdkOGYzOGRmMjM0MTU1MjM3YTllMTE1Y2I4Y2ExNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/unsupported_content.py#L109-L175",
+          "version": "repo-lines-v1:sha256:ac99660397fc7fe997bb73a5d2556390b5a1b782dad2cbac20da4615f4d325be:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMGU3ZDQyYWExOWRlNTMzNzkyNWQzOTk4YTJjYTZiMmQwOWE5Y2NiYWVkODAzZjAxZTY0NWNlZmFhMjQ3NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NmQxMTU1YTFhMTMzMDViODA2MmZlNmIwNGUzMjY5YjhkZGM2NDUwZDM5YmNhMDdmNjA5YTRhMGRhNzI0MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c7c457c07b4b4faba9e29490b2ac9d09",
+      "statement": "FilesystemMiddleware orders synthetic media messages emitted by read_file after the complete ToolMessage batch, and on a ModelInvalidRequestError retries after replacing only latest-turn multimodal read_file content; unrelated invalid model requests still raise.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L215-L260",
+          "version": "repo-lines-v1:sha256:3fbcbed014786ac045539589a90703fb7911a5414b0d493a834fbfe44d326bc0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlZWZlYWVkN2Y4NWJlMDRiODM1YmQ3M2ViNTg2ZjVkMDEwY2FkZWIzZDEyMDZiN2IxYzk0N2MyMGE1MWE5NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOGZhNDZlOTIxNmEyNzU1YmQwYzc5YWRmMzZjOGZmY2I4MjExM2NkZGJhZjBlZjQxYjhjNDRlZDQwOWVkZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L3206-L3229",
+          "version": "repo-lines-v1:sha256:4ef94aa31083709ccbe89c6d00531561a8d72661885107c55445a25aede83cb7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyYTBiNzQ4N2U0MDI1MmQ3ODc5YWJkZjNjNzkwZDRmYzBmNmQ0ZjU4ZDU3Zjk2NGJiNWU2N2RkMjRlYjZiZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTJlYWUyMzQyYWYwOTY4YTYzMzhiZTYxNzJmNDkwOTRmOGYxNjg4YzUwNDg3MzMxYTMzMWYzNzE3NjIzY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk4YTUyYzgxNGM5ZGE0ZDlkNTY0NGE2ZDI0YjdhNmMyMTlhOTc5MDZiZjdlY2E3ZjUwZTg5YzEwMjE2YTNmYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUyMDA1MjY3YWMxMTkzNWMwYjhjMzU2N2UzODk4ZTU5YzI5NWE3YWQzNTNmOGM2OGYwNWZiN2Y3MTlkM2Q5MjYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-25T08:06:00.203Z"
+  }
+}
