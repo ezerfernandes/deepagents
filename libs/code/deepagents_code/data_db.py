@@ -30,7 +30,7 @@ import sqlite3
 from contextlib import closing, contextmanager
 from typing import TYPE_CHECKING
 
-from deepagents_code._paths import PATHS, harden_state_dir
+from deepagents_code._paths import harden_state_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -71,6 +71,11 @@ def default_data_db_path(profile: ProfilePaths | None = None) -> Path:
         The database file inside the profile's state directory.
     """
     if profile is None:
+        # Imported per call, not bound at module import, so a replaced profile
+        # snapshot, such as the one `install_profile_snapshot` installs in
+        # tests, is the one that counts.
+        from deepagents_code._paths import PATHS
+
         profile = PATHS.profile
     return profile.state_dir / DATA_DB_FILENAME
 

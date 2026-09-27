@@ -7,7 +7,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import pytest
 
@@ -22,6 +22,18 @@ from deepagents_code.data_db import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+class _InstallProfileSnapshot(Protocol):
+    """Shape of the `install_profile_snapshot` fixture from `conftest`.
+
+    Declared locally, as in `test_paths.py`, because `tests.unit_tests` is not
+    an importable package.
+    """
+
+    def __call__(self, root: Path | str | None, *, launch_home: Path) -> object:
+        """Install the snapshot and return it."""
+        ...
 
 
 def _scripts(count: int) -> tuple[str, ...]:
@@ -65,6 +77,19 @@ class TestDefaultPath:
         assert default_data_db_path(configured.profile) == (
             tmp_path / "work" / ".state" / "data.db"
         )
+
+    def test_no_argument_reads_the_active_profile_on_each_call(
+        self, tmp_path: Path, install_profile_snapshot: _InstallProfileSnapshot
+    ) -> None:
+        """A profile snapshot installed after import is the one that counts.
+
+        A `PATHS` bound at import time would keep the old profile, because
+        `install_profile_snapshot` patches only the modules it knows about.
+        """
+        configured = tmp_path / "work"
+        install_profile_snapshot(configured, launch_home=tmp_path)
+
+        assert default_data_db_path() == configured / ".state" / "data.db"
 
 
 class TestMigrations:
