@@ -43,7 +43,31 @@ logger = logging.getLogger(__name__)
 DATA_DB_FILENAME = "data.db"
 """File name of the database inside the profile's state directory."""
 
-MIGRATIONS: tuple[str, ...] = ()
+_PROMPTS_SCHEMA = """
+CREATE TABLE prompts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE prompt_versions (
+    id INTEGER PRIMARY KEY,
+    prompt_id INTEGER NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (prompt_id, version)
+);
+"""
+"""Saved prompts and their append-only versions, owned by `prompt_store`.
+
+`name_key` is the case-folded name that makes names unique without regard to
+case. SQLite's `NOCASE` collation folds only ASCII letters, so it would treat
+`Revisão` and `REVISÃO` as two different names.
+"""
+
+MIGRATIONS: tuple[str, ...] = (_PROMPTS_SCHEMA,)
 """Schema scripts in apply order; a file that ran `n` of them has `user_version` `n`.
 
 Append new scripts at the end. Never edit, reorder, or remove a released one:
