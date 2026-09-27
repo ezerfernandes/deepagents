@@ -1,0 +1,57 @@
+PromptEditorScreen {
+    align: center middle;
+}
+
+PromptEditorScreen > Vertical {
+    width: 90%;
+    max-width: 100;
+    /* Fixed size, so the modal does not grow while the body is typed. The
+       body editor takes the space the other rows leave. */
+    height: 80%;
+    min-height: 16;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+PromptEditorScreen #prompt-editor-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+}
+
+PromptEditorScreen .prompt-editor-label {
+    height: auto;
+    color: $text-muted;
+}
+
+PromptEditorScreen #prompt-name {
+    /* The `tall` border takes the top and bottom rows of the 3-row input, so
+       vertical padding would hide the text. See `#prompt-filter` in
+       `prompt_clipboard.tcss`. */
+    padding: 0;
+}
+
+PromptEditorScreen #prompt-editor-status {
+    /* Keeps its row while empty, so a message does not move the body editor. */
+    height: auto;
+    min-height: 1;
+    color: $text-muted;
+}
+
+PromptEditorScreen #prompt-editor-status.-error {
+    color: $text-error;
+}
+
+PromptEditorScreen #prompt-body {
+    height: 1fr;
+    min-height: 3;
+}
+
+PromptEditorScreen #prompt-editor-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+}

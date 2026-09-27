@@ -1,0 +1,114 @@
+/* The library and its versions view share one frame, so moving between them
+   does not resize the modal. */
+
+PromptLibraryScreen,
+PromptVersionsScreen {
+    align: center middle;
+}
+
+PromptLibraryScreen > Vertical,
+PromptVersionsScreen > Vertical {
+    width: 90%;
+    max-width: 120;
+    /* Fixed size, so the modal does not change with the selected preview. */
+    height: 80%;
+    min-height: 14;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+PromptLibraryScreen #prompt-library-title,
+PromptVersionsScreen #prompt-versions-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+}
+
+PromptLibraryScreen #prompt-library-filter {
+    /* The `tall` border takes the top and bottom rows of the 3-row input, so
+       vertical padding would hide the text. See `#prompt-filter` in
+       `prompt_clipboard.tcss`. */
+    padding: 0;
+}
+
+PromptLibraryScreen #prompt-library-filter > .input--placeholder {
+    color: $text-muted;
+}
+
+PromptLibraryScreen #prompt-library-panes,
+PromptVersionsScreen #prompt-versions-panes {
+    height: 1fr;
+}
+
+PromptLibraryScreen #prompt-library-left {
+    width: 1fr;
+}
+
+PromptLibraryScreen #prompt-library-message {
+    height: auto;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+PromptLibraryScreen #prompt-library-message.-error,
+PromptVersionsScreen #prompt-versions-body.-error {
+    color: $text-error;
+}
+
+PromptLibraryScreen #prompt-library-list {
+    height: 1fr;
+    background: $background;
+}
+
+PromptVersionsScreen #prompt-versions-list {
+    /* Wide enough for `v123  sep 26, 10:42am`, so the diff gets the rest. */
+    width: 26;
+    background: $background;
+}
+
+PromptLibraryScreen .prompt-library-row:hover,
+PromptVersionsScreen .prompt-versions-row:hover {
+    background: $surface-lighten-2;
+}
+
+PromptLibraryScreen .prompt-library-row.-selected,
+PromptLibraryScreen .prompt-library-row.-selected:hover,
+PromptVersionsScreen .prompt-versions-row.-selected,
+PromptVersionsScreen .prompt-versions-row.-selected:hover {
+    /* The `:hover` rule outranks a plain class rule, so the selected colors
+       are repeated with `:hover`. See `.prompt-row` in
+       `prompt_clipboard.tcss`. */
+    background: $primary;
+    color: $background;
+}
+
+PromptLibraryScreen #prompt-library-preview-pane,
+PromptVersionsScreen #prompt-versions-right {
+    width: 1fr;
+    padding: 0 1;
+    border-left: solid $surface-lighten-2;
+}
+
+PromptVersionsScreen #prompt-versions-header {
+    height: auto;
+    text-style: bold;
+}
+
+PromptVersionsScreen #prompt-versions-body-pane {
+    height: 1fr;
+}
+
+PromptLibraryScreen #prompt-library-preview,
+PromptVersionsScreen #prompt-versions-body {
+    height: auto;
+}
+
+PromptLibraryScreen #prompt-library-help,
+PromptVersionsScreen #prompt-versions-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+}
