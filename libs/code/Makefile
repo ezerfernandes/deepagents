@@ -125,3 +125,6 @@ help: ## Show this help message
 	@echo ""
 	@echo "Targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# fork: extra make targets
+-include fork.mk

@@ -370,6 +370,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
 )
 """All slash commands."""
 
+# fork: prompt library
+COMMANDS = (
+    *COMMANDS,
+    SlashCommand(
+        name="/library",
+        description="Save, edit, and version reusable prompts",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="prompts saved templates snippets versions diff",
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Derived bypass-tier frozensets

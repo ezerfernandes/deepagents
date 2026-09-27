@@ -17026,6 +17026,12 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(reason))
             else:
                 self.action_open_prompt_clipboard()
+        elif cmd == "/library":  # fork: prompt library
+            from deepagents_code.tui.modals.prompt_library.launch import (
+                open_prompt_library,
+            )
+
+            await open_prompt_library(self)
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -22009,6 +22015,12 @@ class DeepAgentsApp(App):
         selection or the character right of the cursor. Only at the end of the
         prompt with no active selection does it exit the app.
         """
+        # fork: prompt library
+        if "deepagents_code.tui.modals.prompt_library" in sys.modules:
+            from deepagents_code.tui.modals.prompt_library.launch import handle_ctrl_d
+
+            if handle_ctrl_d(self):
+                return
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
@@ -23725,6 +23737,14 @@ class DeepAgentsApp(App):
 
     async def action_open_editor(self) -> None:
         """Open the focused editable surface in $VISUAL/$EDITOR."""
+        # fork: prompt library
+        if "deepagents_code.tui.modals.prompt_editor" in sys.modules:
+            from deepagents_code.tui.modals.prompt_library.launch import (
+                open_prompt_body_in_editor,
+            )
+
+            if await open_prompt_body_in_editor(self):
+                return
         goal_editor = self._focused_goal_review_editor()
         if goal_editor is not None:
             await self._open_text_area_in_editor(
